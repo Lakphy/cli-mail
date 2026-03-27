@@ -1,0 +1,321 @@
+# cli-mail
+
+[English](#english) | [中文](#中文)
+
+---
+
+<a name="english"></a>
+## English
+
+AI-oriented CLI email management tool for Gmail and Outlook. Designed as a bridge between AI agents and email platforms — outputs raw terminal text (markdown/JSON) with no interactive TUI.
+
+### Design Philosophy
+
+- **AI-first**: Default output is markdown text — tables, key-value pairs, structured data that AI agents parse easily.
+- **No TUI**: No colors, spinners, or interactive prompts during operation (only during initial OAuth setup).
+- **Multi-account**: Manage N accounts across Gmail and Outlook with aliases.
+- **Full API coverage**: Comprehensive REST API capabilities exposed as CLI commands.
+- **Dependency Minimalist**: Only `commander` at runtime; everything else uses Node.js built-ins.
+
+### Prerequisites
+
+You need OAuth2 credentials for each email provider you want to use:
+
+#### Gmail
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a project → Enable the Gmail API
+3. Create OAuth 2.0 credentials (Desktop app type)
+4. Note your `Client ID` and `Client Secret`
+
+#### Outlook (Microsoft Graph)
+1. Go to [Azure Portal → App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
+2. Register a new application
+3. Add redirect URI: `http://127.0.0.1` (Web type)
+4. Under API Permissions, add: `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`
+5. Create a client secret
+6. Note your `Client ID` and `Client Secret`
+
+### Installation
+
+```bash
+# Install globally via npm (coming soon)
+npm install -g cli-mail
+
+# Or build and run from source
+git clone https://github.com/yourusername/cli-mail.git
+cd cli-mail
+pnpm install
+pnpm run build
+npm link    # makes `cli-mail` available globally
+```
+
+### Configuration & Security
+
+Accounts are securely stored in a local JSON file at `~/.cli-mail/accounts.json`. The file permissions are strictly set to `0600` (read/write by owner only) to protect OAuth tokens.
+
+---
+
+<a name="中文"></a>
+## 中文
+
+面向 AI Agent 设计的 CLI 邮箱管理工具，支持 Gmail 和 Outlook。作为 AI 和邮箱平台之间的桥梁，输出纯净的终端文本（Markdown / JSON），不含任何交互式 TUI。
+
+### 设计理念
+
+- **AI 优先**: 默认输出为 Markdown 格式（表格、键值对等），方便 AI 代理精准解析。
+- **无 TUI 干扰**: 运行过程中没有颜色代码、加载动画或交互式提示（仅在初始 OAuth 登录时除外）。
+- **多账号支持**: 通过别名机制，跨 Gmail 和 Outlook 灵活管理任意数量的账号。
+- **全量 API 覆盖**: 将两大平台 REST API 的核心功能以原生的 CLI 命令全量暴露。
+- **极简依赖**: 运行时仅依赖 `commander`，其余全部使用 Node.js 原生模块实现。
+
+### 前置准备 
+
+你需要为想要使用的邮箱平台申请 OAuth2 凭证：
+
+#### Gmail
+1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
+2. 创建项目 → 启用 Gmail API
+3. 创建 OAuth 2.0 凭证（应用类型选择“桌面应用”）
+4. 记录下 `Client ID` 和 `Client Secret`
+
+#### Outlook (Microsoft Graph)
+1. 访问 [Azure Portal → App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
+2. 注册一个新应用
+3. 添加重定向 URI: `http://127.0.0.1` (类型选 Web)
+4. 在 API 权限 (API Permissions) 中添加: `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`
+5. 创建客户端密码 (Client secret)
+6. 记录下 `Client ID` 和 `Client Secret`
+
+### 安装指南
+
+```bash
+# 全局安装 (即将发布)
+npm install -g cli-mail
+
+# 或从源码构建运行
+git clone https://github.com/yourusername/cli-mail.git
+cd cli-mail
+pnpm install
+pnpm run build
+npm link    # 将 `cli-mail` 命令链接到全局
+```
+
+### 配置与安全
+
+账号信息安全地存储在本地 JSON 文件中：`~/.cli-mail/accounts.json`。为保护敏感的 OAuth 令牌，该文件权限会被严格设置为 `0600`（仅所有者可读写）。
+
+---
+
+## 🚀 Quick Start / 快速开始
+
+Whether you're an AI or a human, getting started is easy:
+无论是 AI 还是人类，上手都非常简单：
+
+```bash
+# 1. Add an account (Browser will open for login)
+# 1. 添加账号 (会自动打开浏览器进行登录授权)
+cli-mail account add gmail --alias personal
+cli-mail account add outlook --alias work
+
+# 2. List your emails (Markdown table output)
+# 2. 查看邮件列表 (输出 Markdown 表格)
+cli-mail message list --account personal
+
+# 3. Read a specific email
+# 3. 阅读指定邮件内容
+cli-mail message get <message-id>
+
+# 4. Search emails
+# 4. 搜索邮件
+cli-mail message search --query "from:boss@company.com is:unread"
+
+# 5. Send an email
+# 5. 发送邮件
+cli-mail message send --to bob@example.com --subject "Hello" --body "Hi Bob!"
+
+# 6. Read emails as JSON (Ideal for structured AI parsing)
+# 6. 以 JSON 格式读取邮件 (非常适合 AI 结构化解析)
+cli-mail -f json message list --top 5
+```
+
+---
+
+## 📚 Command Reference / 命令参考
+
+### Global Options / 全局选项
+
+| Flag / 标识 | Description / 描述 |
+|---|---|
+| `-f, --format <text\|json>` | Output format / 输出格式 (默认 `text` = markdown) |
+| `-a, --account <alias>` | Account alias to use / 指定操作的账号别名 |
+| `-V, --version` | Show version / 显示版本号 |
+| `-h, --help` | Show help / 显示帮助文档 |
+
+### 👤 Account / 账号管理
+
+```bash
+cli-mail account add <gmail|outlook> [--alias <name>] # Add / 添加账号
+cli-mail account list                                 # List / 列出所有账号
+cli-mail account remove <alias>                       # Remove / 移除账号
+cli-mail account switch <alias>                       # Set default / 设置默认账号
+cli-mail account info [alias]                         # Info / 查看账号详情
+```
+
+### ✉️ Messages / 邮件操作 (Alias: `msg`)
+
+```bash
+cli-mail msg list [--folder <id>] [--query <q>] [--top <n>] [--skip <n>] [--page-token <t>]
+cli-mail msg get <id>
+cli-mail msg raw <id>                # Get raw MIME / 获取原始 MIME 源码
+cli-mail msg send --to <addr...> --subject <s> [--body <b>] [--body-file <f>] [--cc <addr...>] [--bcc <addr...>] [--attach <file...>] [--body-type text|html] [--importance low|normal|high]
+cli-mail msg reply <id> --body <b> [--reply-all]
+cli-mail msg forward <id> --to <addr...> [--body <b>]
+cli-mail msg delete <id> [--permanent]
+cli-mail msg batch-delete --ids <id1> <id2>...  # Delete multiple / 批量删除
+cli-mail msg move <id> --to-folder <folder-id>
+cli-mail msg mark <id> [--read] [--unread] [--flagged] [--unflagged]
+cli-mail msg search --query <q> [--top <n>]
+cli-mail msg untrash <id>            # Restore / 从垃圾箱恢复
+cli-mail msg copy <id> --to-folder <id> # Copy (Outlook only) / 复制邮件
+```
+
+### 📝 Drafts / 草稿箱
+
+```bash
+cli-mail draft list [--top <n>]
+cli-mail draft get <id>
+cli-mail draft create --to <addr...> --subject <s> [--body <b>] [--cc <addr...>] [--bcc <addr...>] [--body-type text|html]
+cli-mail draft update <id> [--to <addr...>] [--subject <s>] [--body <b>] [--cc <addr...>] [--bcc <addr...>] [--body-type text|html]
+cli-mail draft send <id>
+cli-mail draft delete <id>
+```
+
+### 📁 Folders & Labels / 文件夹与标签 (Alias: `label`)
+
+```bash
+cli-mail folder list [--parent <id>]
+cli-mail folder get <id>
+cli-mail folder create --name <n> [--parent <id>]
+cli-mail folder update <id> --name <n>
+cli-mail folder delete <id>
+cli-mail folder messages <id> [--top <n>] # List msgs in folder / 查看文件夹内邮件
+```
+
+### 📎 Attachments / 附件 (Alias: `att`)
+
+```bash
+cli-mail att list <message-id>
+cli-mail att get <message-id> <attachment-id>
+cli-mail att download <message-id> <attachment-id> [-o <path>]
+cli-mail att add <message-id> --file <path>    # Add to draft (Outlook only)
+cli-mail att delete <msg-id> <att-id>          # Delete (Outlook only)
+```
+
+### ⚙️ Settings / 设置
+
+```bash
+cli-mail settings get
+cli-mail settings update --json '<json>'
+cli-mail settings vacation get                 # Auto-reply status / 自动回复状态
+cli-mail settings vacation set [--enabled] [--disabled] [--message <m>] [--start <d>] [--end <d>]
+cli-mail settings forwarding get               # Forwarding / 转发规则 (Gmail only)
+cli-mail settings forwarding set --json '<json>'
+```
+
+### 🛡️ Rules & Filters / 规则与过滤器 (Alias: `filter`)
+
+```bash
+cli-mail rule list
+cli-mail rule get <id>
+cli-mail rule create --json '<rule-json>'
+cli-mail rule update <id> --json '<json>'      # Outlook only
+cli-mail rule delete <id>
+```
+
+### 🧵 Threads / 会话 (Gmail only)
+
+```bash
+cli-mail thread list [--query <q>] [--top <n>]
+cli-mail thread get <id>
+cli-mail thread modify <id> [--add-labels <l>] [--remove-labels <l>]
+cli-mail thread trash <id>
+cli-mail thread untrash <id>
+cli-mail thread delete <id>
+```
+
+### 🏷️ Categories & Features / 分类与其他功能 (Outlook only)
+
+```bash
+cli-mail category list                  # List categories / 列出分类
+cli-mail category create --name <n> [--color <c>]
+cli-mail category update <id> [--name <n>] [--color <c>]
+cli-mail category delete <id>
+
+cli-mail focused-inbox list             # Focused inbox rules / 焦点收件箱规则
+cli-mail focused-inbox add --email <e> --classify <focused|other>
+cli-mail focused-inbox delete <id>
+
+cli-mail mail-tips --addresses <addr...> # Mail tips / 邮件提示信息
+```
+
+---
+
+## 🛠 Output Format Examples / 输出格式示例
+
+### Text (Markdown) — Default
+
+Lists are rendered as clean markdown tables:
+列表会渲染为简洁的 Markdown 表格：
+
+```markdown
+| ID | From | Subject | Date | Read |
+| --- | --- | --- | --- | --- |
+| abc123def | alice@example.com | Project Update | 2024-03-27 | yes |
+```
+
+Objects are rendered as bold key-value pairs:
+对象会渲染为加粗的键值对：
+
+```markdown
+**id**: abc123def
+**subject**: Project Update
+**from**: alice@example.com
+**body**: Hi team, here is the latest update...
+```
+
+### JSON
+
+Perfect for AI parsing. Triggered via `-f json` or `--format json`:
+支持严格的 JSON 输出，极度适合 AI / 脚本解析调用：
+
+```bash
+cli-mail -f json message list
+```
+
+```json
+[
+  {
+    "id": "abc123def",
+    "from": "alice@example.com",
+    "subject": "Project Update",
+    "date": "2024-03-27T10:00:00Z",
+    "read": "yes"
+  }
+]
+```
+
+Errors are also output as standard JSON to `stderr`:
+发生异常时，错误信息会以 JSON 格式输出至 `stderr`：
+
+```json
+{
+  "error": "Account not found: work",
+  "code": "CONFIG_ERROR"
+}
+```
+
+---
+
+## License
+
+MIT
