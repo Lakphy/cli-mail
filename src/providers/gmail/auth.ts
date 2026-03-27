@@ -13,8 +13,8 @@ export async function gmailAuthFlow(
   clientSecret: string,
 ): Promise<{ tokens: OAuthTokens; email: string }> {
   // Start callback server
-  const { result, port } = await startOAuthCallbackServer()
-  const redirectUri = `http://127.0.0.1:${port}`
+  const { result } = await startOAuthCallbackServer()
+  const redirectUri = 'http://localhost:4088/callback'
 
   // Build auth URL
   const authUrl = buildAuthUrl({

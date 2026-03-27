@@ -12,7 +12,7 @@ export interface OAuthCallbackResult {
  * Returns a promise that resolves with the authorization code.
  */
 export function startOAuthCallbackServer(
-  port = 0,
+  port = 4088,
 ): Promise<{ result: Promise<OAuthCallbackResult>; port: number; server: Server }> {
   return new Promise((resolveStart, rejectStart) => {
     let resolveResult: (value: OAuthCallbackResult) => void
@@ -24,7 +24,14 @@ export function startOAuthCallbackServer(
     })
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const url = new URL(req.url || '/', `http://localhost`)
+      const url = new URL(req.url || '/', `http://localhost:${port}`)
+      
+      if (url.pathname !== '/callback') {
+        res.writeHead(404, { 'Content-Type': 'text/plain' })
+        res.end('Not Found')
+        return
+      }
+
       const code = url.searchParams.get('code')
       const error = url.searchParams.get('error')
       const state = url.searchParams.get('state') || undefined

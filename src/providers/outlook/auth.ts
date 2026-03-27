@@ -11,8 +11,8 @@ export async function outlookAuthFlow(
   clientId: string,
   clientSecret: string,
 ): Promise<{ tokens: OAuthTokens; email: string }> {
-  const { result, port } = await startOAuthCallbackServer()
-  const redirectUri = `http://127.0.0.1:${port}`
+  const { result } = await startOAuthCallbackServer()
+  const redirectUri = 'http://localhost:4088/callback'
 
   const authUrl = buildAuthUrl({
     provider: 'outlook',
