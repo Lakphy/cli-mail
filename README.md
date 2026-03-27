@@ -39,11 +39,11 @@ AI-oriented CLI email management tool for Gmail and Outlook. Designed as a bridg
 ### Installation
 
 ```bash
-# Install globally via npm (coming soon)
-npm install -g cli-mail
+# Install globally via npm
+npm install -g @lakphy/cli-mail
 
 # Or build and run from source
-git clone https://github.com/yourusername/cli-mail.git
+git clone https://github.com/Lakphy/cli-mail.git
 cd cli-mail
 pnpm install
 pnpm run build
@@ -53,6 +53,32 @@ npm link    # makes `cli-mail` available globally
 ### Configuration & Security
 
 Accounts are securely stored in a local JSON file at `~/.cli-mail/accounts.json`. The file permissions are strictly set to `0600` (read/write by owner only) to protect OAuth tokens.
+
+### AI Skill for Claude Code
+
+We provide a Claude Code skill that teaches AI assistants how to help you use cli-mail effectively. The skill includes:
+
+- Step-by-step setup guidance
+- Smart command suggestions based on your intent
+- Automatic account management
+- Safety confirmations for sensitive operations
+
+**Install the skill:**
+
+```bash
+# Install from GitHub repository
+npx skills add https://github.com/Lakphy/cli-mail/tree/main/skill
+
+# Or install from local path if you cloned the repo
+npx skills add ./cli-mail/skill
+```
+
+Once installed, you can simply ask Claude in natural language:
+- "帮我查看最新的邮件"
+- "发邮件给 bob@example.com"
+- "搜索来自老板的未读邮件"
+
+The AI will handle the commands for you with proper confirmations.
 
 ---
 
@@ -91,11 +117,11 @@ Accounts are securely stored in a local JSON file at `~/.cli-mail/accounts.json`
 ### 安装指南
 
 ```bash
-# 全局安装 (即将发布)
-npm install -g cli-mail
+# 全局安装
+npm install -g @lakphy/cli-mail
 
 # 或从源码构建运行
-git clone https://github.com/yourusername/cli-mail.git
+git clone https://github.com/Lakphy/cli-mail.git
 cd cli-mail
 pnpm install
 pnpm run build
@@ -105,6 +131,32 @@ npm link    # 将 `cli-mail` 命令链接到全局
 ### 配置与安全
 
 账号信息安全地存储在本地 JSON 文件中：`~/.cli-mail/accounts.json`。为保护敏感的 OAuth 令牌，该文件权限会被严格设置为 `0600`（仅所有者可读写）。
+
+### Claude Code AI 技能
+
+我们提供了一个 Claude Code 技能，可以教会 AI 助手如何帮你高效使用 cli-mail。该技能包含：
+
+- 分步安装和配置指导
+- 根据你的意图智能推荐命令
+- 自动管理多账号
+- 敏感操作的安全确认机制
+
+**安装技能：**
+
+```bash
+# 从 GitHub 仓库安装
+npx skills add https://github.com/Lakphy/cli-mail/tree/main/skill
+
+# 或从本地路径安装（如果你已克隆仓库）
+npx skills add ./cli-mail/skill
+```
+
+安装后，你可以直接用自然语言向 Claude 提问：
+- "帮我查看最新的邮件"
+- "发邮件给 bob@example.com"
+- "搜索来自老板的未读邮件"
+
+AI 会自动帮你执行相应的命令，并在必要时进行确认。
 
 ---
 

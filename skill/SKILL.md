@@ -45,11 +45,12 @@ cli-mail --version
 If not installed, guide the user to install it:
 
 ```bash
-# From npm (if published)
-npm install -g cli-mail
+# From npm
+npm install -g @lakphy/cli-mail
 
 # Or from source
-cd /path/to/cli-mail
+git clone https://github.com/Lakphy/cli-mail.git
+cd cli-mail
 pnpm install
 pnpm run build
 npm link
