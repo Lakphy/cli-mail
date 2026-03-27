@@ -175,8 +175,12 @@ cli-mail msg batch-delete --ids <id1> <id2>...  # Delete multiple / 批量删除
 cli-mail msg move <id> --to-folder <folder-id>
 cli-mail msg mark <id> [--read] [--unread] [--flagged] [--unflagged]
 cli-mail msg search --query <q> [--top <n>]
-cli-mail msg untrash <id>            # Restore / 从垃圾箱恢复
-cli-mail msg copy <id> --to-folder <id> # Copy (Outlook only) / 复制邮件
+cli-mail msg trash <id>                # Move to trash / 移入垃圾箱
+cli-mail msg untrash <id>              # Restore / 从垃圾箱恢复
+cli-mail msg copy <id> --to-folder <id>     # Copy (Outlook only) / 复制邮件
+cli-mail msg batch-modify --ids <id...> --add-labels <l...> --remove-labels <l...>  # Gmail only
+cli-mail msg import --file <path>      # Import raw MIME (Gmail only) / 导入原始邮件
+cli-mail msg insert --file <path>      # Insert without scanning (Gmail only) / 直接插入邮件
 ```
 
 ### 📝 Drafts / 草稿箱
@@ -199,6 +203,8 @@ cli-mail folder create --name <n> [--parent <id>]
 cli-mail folder update <id> --name <n>
 cli-mail folder delete <id>
 cli-mail folder messages <id> [--top <n>] # List msgs in folder / 查看文件夹内邮件
+cli-mail folder move <id> --to-folder <id>    # Move folder (Outlook only) / 移动文件夹
+cli-mail folder copy <id> --to-folder <id>    # Copy folder (Outlook only) / 复制文件夹
 ```
 
 ### 📎 Attachments / 附件 (Alias: `att`)
@@ -256,6 +262,43 @@ cli-mail focused-inbox add --email <e> --classify <focused|other>
 cli-mail focused-inbox delete <id>
 
 cli-mail mail-tips --addresses <addr...> # Mail tips / 邮件提示信息
+```
+
+### 👤 Profile / 用户资料
+
+```bash
+cli-mail profile                        # Show profile / 显示用户资料 (email, displayName, etc.)
+```
+
+### 📜 History / 邮箱变更记录 (Gmail only)
+
+```bash
+cli-mail history --start-history-id <id> [--label-id <id>] [--types <t...>] [--top <n>]
+```
+
+### 🔀 Send-As Aliases / 发件别名 (Gmail only)
+
+```bash
+cli-mail send-as list                   # List aliases / 列出发件别名
+cli-mail send-as get <email>            # Get alias details / 查看别名详情
+cli-mail send-as create --email <e> [--display-name <n>] [--reply-to <e>]
+cli-mail send-as delete <email>         # Delete alias / 删除别名
+```
+
+### 🤝 Delegates / 邮箱委托 (Gmail only)
+
+```bash
+cli-mail delegate list                  # List delegates / 列出委托人
+cli-mail delegate add --email <e>       # Add delegate / 添加委托人
+cli-mail delegate remove <email>        # Remove delegate / 移除委托人
+```
+
+### 📨 Forwarding Addresses / 转发地址 (Gmail only, Alias: `fwd-addr`)
+
+```bash
+cli-mail forwarding-address list        # List addresses / 列出转发地址
+cli-mail forwarding-address add --email <e>  # Add address / 添加转发地址
+cli-mail forwarding-address remove <email>   # Remove address / 移除转发地址
 ```
 
 ---

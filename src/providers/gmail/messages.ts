@@ -265,6 +265,35 @@ export async function untrashMessage(
   await client.post(`/messages/${id}/untrash`)
 }
 
+export async function trashMessage(
+  client: HttpClient,
+  id: string,
+): Promise<void> {
+  await client.post(`/messages/${id}/trash`)
+}
+
+export async function batchModifyMessages(
+  client: HttpClient,
+  ids: string[],
+  addLabelIds?: string[],
+  removeLabelIds?: string[],
+): Promise<void> {
+  await client.post('/messages/batchModify', {
+    ids,
+    addLabelIds: addLabelIds || [],
+    removeLabelIds: removeLabelIds || [],
+  })
+}
+
+export async function insertMessage(
+  client: HttpClient,
+  rawMime: string,
+): Promise<{ id: string }> {
+  const raw = toBase64Url(rawMime)
+  const result = await client.post<GmailMessage>('/messages/insert', { raw })
+  return { id: result.id }
+}
+
 // --- Helpers ---
 
 function parseEmailAddress(raw: string): EmailAddress {

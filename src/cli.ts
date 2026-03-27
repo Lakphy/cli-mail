@@ -5,14 +5,20 @@ import { setGlobalFormat, type OutputFormat } from './output/formatter.js'
 
 // Commands
 import { accountAdd, accountRemove, accountList, accountSwitch, accountInfo } from './commands/account.js'
-import { messageList, messageGet, messageRaw, messageSend, messageReply, messageForward, messageDelete, messageMove, messageMark, messageSearch, messageUntrash, messageBatchDelete, messageImport, messageCopy } from './commands/message.js'
+import { messageList, messageGet, messageRaw, messageSend, messageReply, messageForward, messageDelete, messageMove, messageMark, messageSearch, messageUntrash, messageBatchDelete, messageImport, messageCopy, messageTrash, messageBatchModify, messageInsert } from './commands/message.js'
 import { draftList, draftGet, draftCreate, draftUpdate, draftSend, draftDelete } from './commands/draft.js'
-import { folderList, folderGet, folderCreate, folderUpdate, folderDelete, folderMessages } from './commands/folder.js'
+import { folderList, folderGet, folderCreate, folderUpdate, folderDelete, folderMessages, folderMove, folderCopy } from './commands/folder.js'
 import { attachmentList, attachmentGet, attachmentDownload, attachmentAdd, attachmentDelete } from './commands/attachment.js'
 import { ruleList, ruleGet, ruleCreate, ruleUpdate, ruleDelete } from './commands/rule.js'
 import { settingsGet, settingsUpdate, vacationGet, vacationSet, autoReplyGet, autoReplySet, forwardingGet, forwardingSet, mailTipsGet, focusedInboxList, focusedInboxAdd, focusedInboxDelete } from './commands/settings.js'
 import { threadList, threadGet, threadModify, threadTrash, threadUntrash, threadDelete } from './commands/thread.js'
 import { categoryList, categoryCreate, categoryUpdate, categoryDelete } from './commands/category.js'
+import { profileGet } from './commands/profile.js'
+import { historyList } from './commands/history.js'
+import { sendAsList, sendAsGet, sendAsCreate, sendAsDelete } from './commands/send-as.js'
+import { delegateList, delegateAdd, delegateRemove } from './commands/delegate.js'
+import { fwdAddrList, fwdAddrAdd, fwdAddrRemove } from './commands/forwarding-address.js'
+
 
 export function createCli(): Command {
   const program = new Command()
@@ -173,6 +179,28 @@ export function createCli(): Command {
     .option('-a, --account <alias>', 'Account alias')
     .action((id: string, opts) => messageCopy(id, opts))
 
+  message
+    .command('trash <id>')
+    .description('Move a message to trash')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((id: string, opts) => messageTrash(id, opts))
+
+  message
+    .command('batch-modify')
+    .description('Batch modify labels on messages (Gmail only)')
+    .requiredOption('--ids <ids...>', 'Message IDs')
+    .option('--add-labels <labels...>', 'Labels to add')
+    .option('--remove-labels <labels...>', 'Labels to remove')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => messageBatchModify(opts))
+
+  message
+    .command('insert')
+    .description('Insert a raw MIME message without scanning (Gmail only)')
+    .requiredOption('--file <path>', 'Path to raw MIME file')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => messageInsert(opts))
+
   // ==================== Draft ====================
   const draft = program.command('draft').description('Draft operations')
 
@@ -268,6 +296,20 @@ export function createCli(): Command {
     .option('--top <n>', 'Number of messages', '20')
     .option('-a, --account <alias>', 'Account alias')
     .action((id: string, opts) => folderMessages(id, opts))
+
+  folder
+    .command('move <id>')
+    .description('Move a folder as child of another (Outlook only)')
+    .requiredOption('--to-folder <id>', 'Destination parent folder ID')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((id: string, opts) => folderMove(id, opts))
+
+  folder
+    .command('copy <id>')
+    .description('Copy a folder (Outlook only)')
+    .requiredOption('--to-folder <id>', 'Destination parent folder ID')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((id: string, opts) => folderCopy(id, opts))
 
   // ==================== Attachment ====================
   const attachment = program.command('attachment').alias('att').description('Attachment operations')
@@ -517,6 +559,99 @@ export function createCli(): Command {
     .description('Delete a Focused Inbox override')
     .option('-a, --account <alias>', 'Account alias')
     .action((id: string, opts) => focusedInboxDelete(id, opts))
+
+  // ==================== Profile ====================
+  program
+    .command('profile')
+    .description('Show user profile info')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => profileGet(opts))
+
+  // ==================== History (Gmail) ====================
+  program
+    .command('history')
+    .description('List mailbox change history (Gmail only)')
+    .requiredOption('--start-history-id <id>', 'History ID to start from')
+    .option('--label-id <id>', 'Filter by label ID')
+    .option('--types <types...>', 'History types: messageAdded, messageDeleted, labelAdded, labelRemoved')
+    .option('--top <n>', 'Max results')
+    .option('--page-token <token>', 'Page token')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => historyList(opts))
+
+  // ==================== Send-As (Gmail) ====================
+  const sendAs = program.command('send-as').description('Send-as alias management (Gmail only)')
+
+  sendAs
+    .command('list')
+    .description('List send-as aliases')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => sendAsList(opts))
+
+  sendAs
+    .command('get <email>')
+    .description('Get a send-as alias')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((email: string, opts) => sendAsGet(email, opts))
+
+  sendAs
+    .command('create')
+    .description('Create a send-as alias')
+    .requiredOption('--email <email>', 'Email address')
+    .option('--display-name <name>', 'Display name')
+    .option('--reply-to <email>', 'Reply-to address')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => sendAsCreate(opts))
+
+  sendAs
+    .command('delete <email>')
+    .description('Delete a send-as alias')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((email: string, opts) => sendAsDelete(email, opts))
+
+  // ==================== Delegate (Gmail) ====================
+  const delegate = program.command('delegate').description('Delegate management (Gmail only)')
+
+  delegate
+    .command('list')
+    .description('List delegates')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => delegateList(opts))
+
+  delegate
+    .command('add')
+    .description('Add a delegate')
+    .requiredOption('--email <email>', 'Delegate email address')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => delegateAdd(opts))
+
+  delegate
+    .command('remove <email>')
+    .description('Remove a delegate')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((email: string, opts) => delegateRemove(email, opts))
+
+  // ==================== Forwarding Address (Gmail) ====================
+  const fwdAddr = program.command('forwarding-address').alias('fwd-addr').description('Forwarding address management (Gmail only)')
+
+  fwdAddr
+    .command('list')
+    .description('List forwarding addresses')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => fwdAddrList(opts))
+
+  fwdAddr
+    .command('add')
+    .description('Add a forwarding address')
+    .requiredOption('--email <email>', 'Forwarding email address')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => fwdAddrAdd(opts))
+
+  fwdAddr
+    .command('remove <email>')
+    .description('Remove a forwarding address')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((email: string, opts) => fwdAddrRemove(email, opts))
 
   return program
 }

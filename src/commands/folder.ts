@@ -2,7 +2,7 @@
 
 import { resolveAccount } from './resolve.js'
 import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError } from '../utils/error.js'
+import { handleError, ProviderError } from '../utils/error.js'
 import * as gmailLabels from '../providers/gmail/labels.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
 import * as outlookFolders from '../providers/outlook/folders.js'
@@ -155,6 +155,38 @@ export async function folderMessages(id: string, opts: { top?: string; account?:
         ],
       )
     }
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export async function folderMove(
+  id: string,
+  opts: { toFolder: string; account?: string },
+): Promise<void> {
+  try {
+    const { account, client } = resolveAccount(opts.account)
+    if (account.provider !== 'outlook') {
+      throw new ProviderError('Folder move is only supported for Outlook. Gmail labels have no hierarchy.', account.provider)
+    }
+    const result = await outlookFolders.moveFolder(client, id, opts.toFolder)
+    output(result)
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export async function folderCopy(
+  id: string,
+  opts: { toFolder: string; account?: string },
+): Promise<void> {
+  try {
+    const { account, client } = resolveAccount(opts.account)
+    if (account.provider !== 'outlook') {
+      throw new ProviderError('Folder copy is only supported for Outlook. Gmail labels have no hierarchy.', account.provider)
+    }
+    const result = await outlookFolders.copyFolder(client, id, opts.toFolder)
+    outputSuccess(`Folder copied (new id: ${result.id})`)
   } catch (error) {
     handleError(error)
   }

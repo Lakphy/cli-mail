@@ -360,3 +360,53 @@ export async function messageCopy(
     handleError(error)
   }
 }
+
+export async function messageTrash(
+  id: string,
+  opts: { account?: string },
+): Promise<void> {
+  try {
+    const { account, client } = resolveAccount(opts.account)
+    if (account.provider === 'gmail') {
+      await gmailMessages.trashMessage(client, id)
+      outputSuccess(`Message moved to trash: ${id}`)
+    } else {
+      // Outlook: move to DeletedItems
+      await outlookMessages.moveMessage(client, id, 'deleteditems')
+      outputSuccess(`Message moved to Deleted Items: ${id}`)
+    }
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export async function messageBatchModify(
+  opts: { ids: string[]; addLabels?: string[]; removeLabels?: string[]; account?: string },
+): Promise<void> {
+  try {
+    const { account, client } = resolveAccount(opts.account)
+    if (account.provider !== 'gmail') {
+      throw new ProviderError('Batch modify is only supported for Gmail accounts.', account.provider)
+    }
+    await gmailMessages.batchModifyMessages(client, opts.ids, opts.addLabels, opts.removeLabels)
+    outputSuccess(`Batch modified ${opts.ids.length} messages`)
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export async function messageInsert(
+  opts: { file: string; account?: string },
+): Promise<void> {
+  try {
+    const { account, client } = resolveAccount(opts.account)
+    if (account.provider !== 'gmail') {
+      throw new ProviderError('Message insert is only supported for Gmail accounts.', account.provider)
+    }
+    const rawMime = readFileSync(opts.file, 'utf-8')
+    const result = await gmailMessages.insertMessage(client, rawMime)
+    outputSuccess(`Message inserted (id: ${result.id})`)
+  } catch (error) {
+    handleError(error)
+  }
+}

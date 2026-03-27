@@ -731,6 +731,7 @@ describe('CLI', () => {
     const expected = [
       'account', 'message', 'draft', 'folder', 'attachment',
       'rule', 'settings', 'thread', 'category', 'mail-tips', 'focused-inbox',
+      'profile', 'history', 'send-as', 'delegate', 'forwarding-address',
     ]
     for (const name of expected) {
       expect(names).toContain(name)
@@ -755,6 +756,7 @@ describe('CLI', () => {
     const expected = [
       'list', 'get', 'raw', 'send', 'reply', 'forward', 'delete',
       'move', 'mark', 'search', 'untrash', 'batch-delete', 'import', 'copy',
+      'trash', 'batch-modify', 'insert',
     ]
     for (const name of expected) {
       expect(subNames).toContain(name)
@@ -779,11 +781,11 @@ describe('CLI', () => {
     }
   })
 
-  test('folder command has all subcommands', () => {
+  test('folder command has all subcommands including move/copy', () => {
     const program = createCli()
     const folderCmd = program.commands.find((c) => c.name() === 'folder')
     const subNames = folderCmd?.commands.map((c) => c.name()) || []
-    for (const name of ['list', 'get', 'create', 'update', 'delete', 'messages']) {
+    for (const name of ['list', 'get', 'create', 'update', 'delete', 'messages', 'move', 'copy']) {
       expect(subNames).toContain(name)
     }
   })
@@ -875,6 +877,7 @@ describe('CLI', () => {
       ['message', 'list'], ['message', 'get'], ['message', 'send'],
       ['draft', 'list'], ['folder', 'list'], ['attachment', 'list'],
       ['rule', 'list'], ['thread', 'list'], ['category', 'list'],
+      ['send-as', 'list'], ['delegate', 'list'], ['forwarding-address', 'list'],
     ]
     for (const [parent, child] of cmdPairs) {
       const parentCmd = program.commands.find((c) => c.name() === parent)
@@ -882,6 +885,120 @@ describe('CLI', () => {
       const optionFlags = childCmd?.options.map((o) => o.long) || []
       expect(optionFlags).toContain('--account')
     }
+  })
+
+  // ---- New command group tests ----
+
+  test('message trash command exists', () => {
+    const program = createCli()
+    const msgCmd = program.commands.find((c) => c.name() === 'message')
+    const trashCmd = msgCmd?.commands.find((c) => c.name() === 'trash')
+    expect(trashCmd).toBeDefined()
+    expect(trashCmd?.options.map((o) => o.long)).toContain('--account')
+  })
+
+  test('message batch-modify has --ids, --add-labels, --remove-labels', () => {
+    const program = createCli()
+    const msgCmd = program.commands.find((c) => c.name() === 'message')
+    const bmCmd = msgCmd?.commands.find((c) => c.name() === 'batch-modify')
+    const flags = bmCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--ids')
+    expect(flags).toContain('--add-labels')
+    expect(flags).toContain('--remove-labels')
+  })
+
+  test('message insert has --file option', () => {
+    const program = createCli()
+    const msgCmd = program.commands.find((c) => c.name() === 'message')
+    const insertCmd = msgCmd?.commands.find((c) => c.name() === 'insert')
+    expect(insertCmd).toBeDefined()
+    expect(insertCmd?.options.map((o) => o.long)).toContain('--file')
+  })
+
+  test('folder move/copy have --to-folder option', () => {
+    const program = createCli()
+    const folderCmd = program.commands.find((c) => c.name() === 'folder')
+    for (const name of ['move', 'copy']) {
+      const cmd = folderCmd?.commands.find((c) => c.name() === name)
+      expect(cmd).toBeDefined()
+      expect(cmd?.options.map((o) => o.long)).toContain('--to-folder')
+    }
+  })
+
+  test('profile command exists with --account option', () => {
+    const program = createCli()
+    const profileCmd = program.commands.find((c) => c.name() === 'profile')
+    expect(profileCmd).toBeDefined()
+    expect(profileCmd?.options.map((o) => o.long)).toContain('--account')
+  })
+
+  test('history command has all required options', () => {
+    const program = createCli()
+    const histCmd = program.commands.find((c) => c.name() === 'history')
+    expect(histCmd).toBeDefined()
+    const flags = histCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--start-history-id')
+    expect(flags).toContain('--label-id')
+    expect(flags).toContain('--types')
+    expect(flags).toContain('--top')
+    expect(flags).toContain('--page-token')
+  })
+
+  test('send-as command has all subcommands', () => {
+    const program = createCli()
+    const saCmd = program.commands.find((c) => c.name() === 'send-as')
+    const subNames = saCmd?.commands.map((c) => c.name()) || []
+    for (const name of ['list', 'get', 'create', 'delete']) {
+      expect(subNames).toContain(name)
+    }
+  })
+
+  test('send-as create has --email, --display-name, --reply-to options', () => {
+    const program = createCli()
+    const saCmd = program.commands.find((c) => c.name() === 'send-as')
+    const createCmd = saCmd?.commands.find((c) => c.name() === 'create')
+    const flags = createCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--email')
+    expect(flags).toContain('--display-name')
+    expect(flags).toContain('--reply-to')
+  })
+
+  test('delegate command has all subcommands', () => {
+    const program = createCli()
+    const delCmd = program.commands.find((c) => c.name() === 'delegate')
+    const subNames = delCmd?.commands.map((c) => c.name()) || []
+    for (const name of ['list', 'add', 'remove']) {
+      expect(subNames).toContain(name)
+    }
+  })
+
+  test('delegate add has --email option', () => {
+    const program = createCli()
+    const delCmd = program.commands.find((c) => c.name() === 'delegate')
+    const addCmd = delCmd?.commands.find((c) => c.name() === 'add')
+    expect(addCmd?.options.map((o) => o.long)).toContain('--email')
+  })
+
+  test('forwarding-address command has all subcommands', () => {
+    const program = createCli()
+    const fwdCmd = program.commands.find((c) => c.name() === 'forwarding-address')
+    const subNames = fwdCmd?.commands.map((c) => c.name()) || []
+    for (const name of ['list', 'add', 'remove']) {
+      expect(subNames).toContain(name)
+    }
+  })
+
+  test('forwarding-address has fwd-addr alias', () => {
+    const program = createCli()
+    const fwdCmd = program.commands.find((c) => c.name() === 'forwarding-address')
+    expect(fwdCmd?.aliases()).toContain('fwd-addr')
+  })
+
+  test('forwarding-address add has --email option', () => {
+    const program = createCli()
+    const fwdCmd = program.commands.find((c) => c.name() === 'forwarding-address')
+    const addCmd = fwdCmd?.commands.find((c) => c.name() === 'add')
+    expect(addCmd?.options.map((o) => o.long)).toContain('--email')
   })
 })
 
@@ -1007,8 +1124,8 @@ describe('Gmail Message Helpers', () => {
   })
 
   test('empty string returns empty array', () => {
-    const raw = ''
-    const addresses = raw ? raw.split(',').map((a) => a.trim()) : []
+    const raw: string = ''
+    const addresses: string[] = raw ? raw.split(',').map((a: string) => a.trim()) : []
     expect(addresses).toHaveLength(0)
   })
 })
@@ -1026,7 +1143,7 @@ describe('Outlook Message Helpers', () => {
   })
 
   test('Graph email address without name', () => {
-    const graphAddr = { emailAddress: { address: 'alice@example.com' } }
+    const graphAddr: { emailAddress: { name?: string; address: string } } = { emailAddress: { address: 'alice@example.com' } }
     const normalized = { name: graphAddr.emailAddress.name, address: graphAddr.emailAddress.address }
     expect(normalized.name).toBeUndefined()
     expect(normalized.address).toBe('alice@example.com')
