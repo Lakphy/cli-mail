@@ -1,5 +1,5 @@
 {
-  "name": "cli-mail",
+  "name": "@lakphy/cli-mail",
   "type": "module",
   "version": "0.1.0",
   "description": "AI-oriented CLI email management tool for Gmail and Outlook",

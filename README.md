@@ -17,23 +17,24 @@ AI-oriented CLI email management tool for Gmail and Outlook. Designed as a bridg
 - **Full API coverage**: Comprehensive REST API capabilities exposed as CLI commands.
 - **Dependency Minimalist**: Only `commander` at runtime; everything else uses Node.js built-ins.
 
-### Prerequisites
+### Prerequisites / 获取 API 凭证 (Client ID)
 
-You need OAuth2 credentials for each email provider you want to use:
+因为 `cli-mail` 是一个纯本地无服务器的工具，它会直接连接到 Google / Microsoft 的接口。所以你需要去云控制台创建一个“应用”，并获取它的“身份证”（即 **Client ID** 和 **Client Secret**）。
 
 #### Gmail
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project → Enable the Gmail API
-3. Create OAuth 2.0 credentials (Desktop app type)
-4. Note your `Client ID` and `Client Secret`
+2. Create a project → Enable the **Gmail API**
+3. Create OAuth 2.0 credentials (Application type must be **Desktop app** or **Web application**).
+   - *If using Web application, set the Authorized redirect URI EXACTLY to: `http://localhost:4088/callback`*
+4. Note your `Client ID` and `Client Secret`.
 
 #### Outlook (Microsoft Graph)
 1. Go to [Azure Portal → App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
-2. Register a new application
-3. Add redirect URI: `http://127.0.0.1` (Web type)
+2. Register a new application. **IMPORTANT**: For "Supported account types", you MUST choose the 3rd option: *"Accounts in any organizational directory and personal Microsoft accounts"*.
+3. Add a Redirect URI: Select **Web** platform and set it EXACTLY to `http://localhost:4088/callback`
 4. Under API Permissions, add: `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`
-5. Create a client secret
-6. Note your `Client ID` and `Client Secret`
+5. Create a client secret in "Certificates & secrets".
+6. Note your `Application (client) ID` and the Secret `Value`.
 
 ### Installation
 
@@ -68,23 +69,24 @@ Accounts are securely stored in a local JSON file at `~/.cli-mail/accounts.json`
 - **全量 API 覆盖**: 将两大平台 REST API 的核心功能以原生的 CLI 命令全量暴露。
 - **极简依赖**: 运行时仅依赖 `commander`，其余全部使用 Node.js 原生模块实现。
 
-### 前置准备 
+### 前置准备 / 获取 API 凭证 (Client ID)
 
-你需要为想要使用的邮箱平台申请 OAuth2 凭证：
+因为 `cli-mail` 是纯本地运行的命令行工具，没有中心服务器做数据中转，所以需要你自己去官方平台申请一个“应用身份证”（也就是下文提到的 **Client ID** 和 **Client Secret**）。
 
 #### Gmail
 1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
-2. 创建项目 → 启用 Gmail API
-3. 创建 OAuth 2.0 凭证（应用类型选择“桌面应用”）
-4. 记录下 `Client ID` 和 `Client Secret`
+2. 创建项目 → 启用 **Gmail API**
+3. 创建 OAuth 2.0 凭证（应用类型选择“桌面应用”或“Web 应用”）。
+   - *如果是 Web 应用类型，务必将“已授权的重定向 URI”精确设置为: `http://localhost:4088/callback`*
+4. 生成后，记录下你的 `Client ID` 和 `Client Secret`。
 
 #### Outlook (Microsoft Graph)
-1. 访问 [Azure Portal → App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
-2. 注册一个新应用
-3. 添加重定向 URI: `http://127.0.0.1` (类型选 Web)
-4. 在 API 权限 (API Permissions) 中添加: `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`
-5. 创建客户端密码 (Client secret)
-6. 记录下 `Client ID` 和 `Client Secret`
+1. 访问 [Azure Portal → App Registrations (应用注册)](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps)
+2. 注册一个新应用。**极其重要**：在“受支持的帐户类型”项，必须选择第 3 项：*“任何组织目录中的帐户和个人 Microsoft 帐户(例如 Skype、Xbox)”*，否则个人邮箱无法登录。
+3. 添加重定向 URI: 类型选择 **Web**，地址精确填写为 `http://localhost:4088/callback`
+4. 在 API 权限 (API Permissions) 中添加所需权限: `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`
+5. 在左侧“证书和密码”中，创建新的客户端密码 (Client secret)。
+6. 记录下概览页的 `应用程序(客户端) ID`，以及刚才密码表格里生成的密码 `值 (Value)`。
 
 ### 安装指南
 
@@ -108,12 +110,12 @@ npm link    # 将 `cli-mail` 命令链接到全局
 
 ## 🚀 Quick Start / 快速开始
 
-Whether you're an AI or a human, getting started is easy:
-无论是 AI 还是人类，上手都非常简单：
+无论是 AI 还是人类，上手都非常简单。
+*(💡 提示：如果你还在本地开发阶段没有全局安装，请把下面所有的 `cli-mail` 替换成 `node ./dist/index.mjs`)*
 
 ```bash
-# 1. Add an account (Browser will open for login)
-# 1. 添加账号 (会自动打开浏览器进行登录授权)
+# 1. Add an account (Browser will open & ask for your Client ID)
+# 1. 绑定账号 (终端会要求输入你的 Client ID，并将自动打开浏览器授权)
 cli-mail account add gmail --alias personal
 cli-mail account add outlook --alias work
 
