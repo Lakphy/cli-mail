@@ -114,6 +114,7 @@ export interface ListOptions {
   query?: string
   folder?: string
   orderBy?: string
+  pageToken?: string
 }
 
 export interface ReplyOptions {

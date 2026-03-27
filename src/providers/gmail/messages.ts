@@ -58,6 +58,9 @@ export async function listMessages(
     // Gmail uses pageToken, not skip. We'll just note this.
     // For simplicity, we ignore skip for Gmail.
   }
+  if (options.pageToken) {
+    query.pageToken = options.pageToken
+  }
 
   const list = await client.get<GmailMessageList>('/messages', query)
 
