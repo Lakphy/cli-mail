@@ -5,7 +5,7 @@ description: Help users manage Gmail and Outlook emails using the cli-mail comma
 
 # CLI Mail Assistant
 
-This skill helps users interact with their Gmail and Outlook accounts through the `cli-mail` command-line tool. The tool is designed for AI agents with clean markdown/JSON output.
+This skill helps users interact with their Gmail and Outlook accounts through the `cli-mail` command-line tool (v0.1.1). The tool is designed for AI agents with clean markdown/JSON output.
 
 ## Core Principles
 
@@ -13,9 +13,9 @@ This skill helps users interact with their Gmail and Outlook accounts through th
 
 **Confirmation for sensitive actions**: Before sending emails or deleting messages, confirm the details with the user - especially verify the recipient addresses and account being used.
 
-**Output format**: Use `-f json` when you need to parse results programmatically. Use default text format when showing results to users.
+**Output format**: The default output is **markdown** (tables, key-value pairs with checkmarks for booleans). Use `-f json` when you need full structured data for programmatic parsing. The old `text` format name is accepted as an alias for backward compatibility.
 
-**Error handling**: If a command fails, check if the account exists, tokens are valid, or if the user needs to re-authenticate.
+**Error handling**: Errors now include **actionable suggestions** (e.g., "Re-authenticate with: cli-mail account add <provider>"). In markdown mode, errors render as blockquotes with icons. In JSON mode, errors include a `suggestion` field.
 
 ## How to Use This Skill
 
@@ -183,6 +183,20 @@ cli-mail att download <message-id> <attachment-id> -o ~/Downloads/ --account per
 cli-mail message list --account personal --top 10
 ```
 
+**List emails by time range (new):**
+```bash
+cli-mail msg recent --hours 6 --account personal           # last 6 hours
+cli-mail msg recent --since 2026-03-28T00:00:00Z --top 50  # since specific time
+```
+
+**Cross-account inbox (new):**
+```bash
+cli-mail inbox                    # last 24h from all accounts
+cli-mail inbox --hours 12         # last 12h from all accounts
+cli-mail inbox --top 5            # 5 messages per account
+```
+The `inbox` command aggregates messages across all configured accounts, sorted by date. If one account fails, it continues with the rest.
+
 **Read specific email:**
 ```bash
 cli-mail message get <message-id> --account personal
@@ -273,6 +287,17 @@ cli-mail account info personal
 cli-mail account remove old-account
 ```
 
+**Rename account alias:**
+```bash
+cli-mail account rename old-alias new-alias
+```
+
+**Validate account tokens:**
+```bash
+cli-mail account validate          # validate all accounts
+cli-mail account validate personal  # validate specific account
+```
+
 ### Working with Folders/Labels
 
 **List folders:**
@@ -340,14 +365,18 @@ Always specify `--account` when the user has multiple accounts to avoid confusio
 
 ## Output Formats
 
-**Text (default)**: Clean markdown tables and key-value pairs, easy for humans to read.
+**Markdown (default)**: Clean markdown tables and key-value pairs, optimized for AI consumption.
+- Boolean values render as checkmarks (not `true`/`false`)
+- Success messages render as `> ✓ Message sent`
+- Errors render as blockquotes with actionable suggestions
+- The old `-f text` flag is accepted as an alias for backward compatibility
 
 **JSON**: Use `-f json` for programmatic parsing:
 ```bash
 cli-mail -f json message list --account personal
 ```
 
-This outputs structured JSON that you can parse with `jq` or in your code.
+This outputs structured JSON that you can parse with `jq` or in your code. Error responses in JSON mode include a `suggestion` field with actionable remediation steps.
 
 ## Common Issues & Solutions
 
@@ -397,6 +426,8 @@ This outputs structured JSON that you can parse with `jq` or in your code.
 - `account remove <alias>` - Remove account
 - `account switch <alias>` - Set default account
 - `account info [alias]` - View account details
+- `account rename <old-alias> <new-alias>` - Rename account alias
+- `account validate [alias]` - Validate account configuration and tokens
 
 ### Message Commands (alias: `msg`)
 - `msg list [--folder <id>] [--query <q>] [--top <n>] [--skip <n>] [--page-token <t>]` - List messages
@@ -416,6 +447,7 @@ This outputs structured JSON that you can parse with `jq` or in your code.
 - `msg batch-modify --ids <id...> --add-labels <l...> --remove-labels <l...>` - Batch modify labels (Gmail only)
 - `msg import --file <path>` - Import raw MIME (Gmail only)
 - `msg insert --file <path>` - Insert without scanning (Gmail only)
+- `msg recent [--hours <n>] [--since <date>] [--top <n>]` - List recent messages by time range
 
 ### Draft Commands
 - `draft list [--top <n>]` - List drafts
@@ -476,6 +508,9 @@ This outputs structured JSON that you can parse with `jq` or in your code.
 - `focused-inbox add --email <e> --classify <focused|other>` - Add rule
 - `focused-inbox delete <id>` - Delete rule
 
+### Cross-Account Commands
+- `inbox [--hours <n>] [--since <date>] [--top <n>]` - Cross-account inbox aggregation
+
 ### Other Commands
 - `profile` - Show user profile (email, displayName, etc.)
 - `history --start-history-id <id> [--label-id <id>] [--types <t...>] [--top <n>]` - Mailbox history (Gmail only)
@@ -498,7 +533,7 @@ This outputs structured JSON that you can parse with `jq` or in your code.
 - `forwarding-address remove <email>` - Remove forwarding address
 
 ### Global Options
-- `-f, --format <text|json>` - Output format
+- `-f, --format <markdown|json>` - Output format (default: markdown; `text` accepted as alias)
 - `-a, --account <alias>` - Specify account
 - `-h, --help` - Show help
 - `-V, --version` - Show version
@@ -508,6 +543,13 @@ This outputs structured JSON that you can parse with `jq` or in your code.
 **"帮我查看最新的邮件"**
 ```bash
 cli-mail message list --account personal --top 5
+# Or use the new time-based recent command:
+cli-mail msg recent --hours 6 --account personal
+```
+
+**"查看所有邮箱的最新邮件"**
+```bash
+cli-mail inbox --hours 12
 ```
 
 **"发一封邮件给 bob@example.com"**
@@ -537,6 +579,16 @@ cli-mail folder list --account personal
 cli-mail message move <message-id> --to-folder <archive-folder-id> --account personal
 ```
 
+**"重命名邮箱别名"**
+```bash
+cli-mail account rename old-name new-name
+```
+
+**"检查邮箱配置是否正常"**
+```bash
+cli-mail account validate
+```
+
 ## Tips for AI Assistants
 
 1. **Always check account status first** when helping with email operations
@@ -554,8 +606,9 @@ Before running any command:
 - [ ] Verify account exists: `cli-mail account list`
 - [ ] Use correct account alias with `--account` flag
 - [ ] For sensitive operations (send/delete), confirm with user first
-- [ ] Choose appropriate output format (`-f json` for parsing, text for display)
-- [ ] If command fails, read `references/error-handling.md` for solutions
+- [ ] Choose appropriate output format (`-f json` for parsing, markdown for display)
+- [ ] If command fails, check the suggestion in the error output for actionable remediation
+- [ ] If suggestion is insufficient, read `references/error-handling.md` for solutions
 
 When constructing search queries:
 
