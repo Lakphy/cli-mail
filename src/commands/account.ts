@@ -12,7 +12,7 @@ import {
 import type { Provider, AccountConfig } from '../config/types.js'
 import { gmailAuthFlow } from '../providers/gmail/auth.js'
 import { outlookAuthFlow } from '../providers/outlook/auth.js'
-import { output, outputList, outputSuccess, getGlobalFormat } from '../output/formatter.js'
+import { output, outputList, outputSuccess } from '../output/formatter.js'
 import { handleError, ConfigError } from '../utils/error.js'
 
 function prompt(question: string): Promise<string> {
@@ -86,16 +86,12 @@ export function accountList(): void {
       return
     }
 
-    const isJson = getGlobalFormat() === 'json'
-
     outputList(
       config.accounts.map((a) => ({
         alias: a.alias,
         provider: a.provider,
         email: a.email,
-        default: isJson
-          ? (a.alias === config.default_account)
-          : (a.alias === config.default_account ? '✓' : ''),
+        default: a.alias === config.default_account,
         created: a.created_at,
       })),
       [
@@ -195,33 +191,15 @@ export async function accountValidate(alias?: string): Promise<void> {
       ? config.accounts.some((a) => a.alias === config.default_account)
       : false
 
-    const isJson = getGlobalFormat() === 'json'
-    if (isJson) {
-      output({
-        default_account: config.default_account,
-        default_account_valid: defaultValid,
-        accounts: results,
-      })
-    } else {
-      if (!defaultValid && config.default_account) {
-        outputSuccess(`⚠ Default account "${config.default_account}" not found in accounts list`)
-      }
-      outputList(
-        results.map((r) => ({
-          ...r,
-          token_valid: r.token_valid ? '✓' : '✗',
-          alias_unique: r.alias_unique ? '✓' : '✗',
-        })),
-        [
-          { key: 'alias', label: 'Alias' },
-          { key: 'email', label: 'Email' },
-          { key: 'provider', label: 'Provider' },
-          { key: 'token_valid', label: 'Token' },
-          { key: 'alias_unique', label: 'Unique' },
-          { key: 'issue', label: 'Issue' },
-        ],
-      )
+    if (!defaultValid && config.default_account) {
+      outputSuccess(`⚠ Default account "${config.default_account}" not found in accounts list`)
     }
+
+    output({
+      default_account: config.default_account,
+      default_account_valid: defaultValid,
+      accounts: results,
+    })
   } catch (error) {
     handleError(error)
   }

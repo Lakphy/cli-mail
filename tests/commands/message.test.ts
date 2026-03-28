@@ -12,7 +12,7 @@ vi.mock('../../src/output/formatter', () => ({
   outputList: vi.fn(),
   outputSuccess: vi.fn(),
   outputRaw: vi.fn(),
-  getGlobalFormat: vi.fn().mockReturnValue('text'),
+  getGlobalFormat: vi.fn().mockReturnValue('markdown'),
 }))
 vi.mock('../../src/providers/gmail/messages', () => ({
   listMessages: vi.fn(),

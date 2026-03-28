@@ -126,7 +126,7 @@ export async function folderMessages(id: string, opts: { top?: string; account?:
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: m.isRead ? 'yes' : 'no',
+          read: m.isRead,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -144,7 +144,7 @@ export async function folderMessages(id: string, opts: { top?: string; account?:
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: m.isRead ? 'yes' : 'no',
+          read: m.isRead,
         })),
         [
           { key: 'id', label: 'ID' },

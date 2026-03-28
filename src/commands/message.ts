@@ -1,5 +1,5 @@
 import { resolveAccount } from './resolve.js'
-import { output, outputList, outputSuccess, outputRaw, getGlobalFormat } from '../output/formatter.js'
+import { output, outputList, outputSuccess, outputRaw } from '../output/formatter.js'
 import { handleError, ProviderError } from '../utils/error.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
 import * as outlookMessages from '../providers/outlook/messages.js'
@@ -27,8 +27,6 @@ export async function messageList(opts: MessageListOpts): Promise<void> {
       skip: opts.skip ? parseInt(opts.skip, 10) : undefined,
     }
 
-    const isJson = getGlobalFormat() === 'json'
-
     if (account.provider === 'gmail') {
       const result = await gmailMessages.listMessages(client, options)
       outputList(
@@ -37,8 +35,8 @@ export async function messageList(opts: MessageListOpts): Promise<void> {
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-          attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+          read: m.isRead,
+          attachments: m.hasAttachments,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -57,8 +55,8 @@ export async function messageList(opts: MessageListOpts): Promise<void> {
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-          attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+          read: m.isRead,
+          attachments: m.hasAttachments,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -424,7 +422,6 @@ export async function messageRecent(
   try {
     const { account, client } = resolveAccount(opts.account)
     const top = opts.top ? parseInt(opts.top, 10) : 20
-    const isJson = getGlobalFormat() === 'json'
 
     // Determine the time threshold
     let sinceDate: Date
@@ -449,8 +446,8 @@ export async function messageRecent(
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-          attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+          read: m.isRead,
+          attachments: m.hasAttachments,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -474,8 +471,8 @@ export async function messageRecent(
           from: m.from.address,
           subject: m.subject,
           date: m.date,
-          read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-          attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+          read: m.isRead,
+          attachments: m.hasAttachments,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -504,7 +501,6 @@ export async function messageAll(
       return
     }
 
-    const isJson = getGlobalFormat() === 'json'
     const top = opts.top ? parseInt(opts.top, 10) : 10 // per-account limit
 
     // Determine the time threshold
@@ -540,8 +536,8 @@ export async function messageAll(
               from: m.from.address,
               subject: m.subject,
               date: m.date,
-              read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-              attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+              read: m.isRead,
+              attachments: m.hasAttachments,
             })
           }
         } else {
@@ -559,8 +555,8 @@ export async function messageAll(
               from: m.from.address,
               subject: m.subject,
               date: m.date,
-              read: isJson ? m.isRead : (m.isRead ? 'yes' : 'no'),
-              attachments: isJson ? m.hasAttachments : (m.hasAttachments ? 'yes' : 'no'),
+              read: m.isRead,
+              attachments: m.hasAttachments,
             })
           }
         }

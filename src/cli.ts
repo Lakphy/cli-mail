@@ -37,12 +37,14 @@ export function createCli(): Command {
     .name('cli-mail')
     .description('AI-oriented CLI email management tool for Gmail and Outlook')
     .version('0.1.0')
-    .option('-f, --format <format>', 'Output format: text (default) or json', 'text')
+    .option('-f, --format <format>', 'Output format: markdown (default) or json', 'markdown')
     .option('-a, --account <alias>', 'Account alias to use')
     .hook('preAction', (thisCommand) => {
       const opts = thisCommand.opts()
       if (opts.format) {
-        setGlobalFormat(opts.format as OutputFormat)
+        // Accept 'text' as alias for 'markdown' for backward compatibility
+        const fmt = opts.format === 'text' ? 'markdown' : opts.format
+        setGlobalFormat(fmt as OutputFormat)
       }
       if (opts.account) {
         _globalAccountAlias = opts.account

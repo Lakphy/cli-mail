@@ -1,5 +1,7 @@
 // Standardized error types for CLI mail
 
+import { getGlobalFormat } from '../output/formatter.js'
+
 export class CliMailError extends Error {
   constructor(
     message: string,
@@ -116,6 +118,9 @@ function getSuggestion(error: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * Format error output as JSON (used in JSON mode and as fallback).
+ */
 export function formatErrorOutput(error: unknown): string {
   const suggestion = getSuggestion(error)
 
@@ -150,8 +155,43 @@ export function formatErrorOutput(error: unknown): string {
   }, null, 2)
 }
 
-export function handleError(error: unknown): never {
-  process.stderr.write(formatErrorOutput(error) + '\n')
-  process.exit(1)
+/**
+ * Format error output as Markdown (used in markdown mode).
+ */
+function formatErrorMarkdown(error: unknown): string {
+  const suggestion = getSuggestion(error)
+  const lines: string[] = []
+
+  if (error instanceof CliMailError) {
+    lines.push(`> ❌ **Error**: ${error.message}`)
+    lines.push(`> **Code**: ${error.code}`)
+    if (error.statusCode) {
+      lines.push(`> **Status**: ${error.statusCode}`)
+    }
+    if (error instanceof ApiError && error.response) {
+      lines.push(`> **Details**: ${JSON.stringify(error.response)}`)
+    }
+  } else if (error instanceof Error) {
+    lines.push(`> ❌ **Error**: ${error.message}`)
+    lines.push(`> **Code**: UNKNOWN_ERROR`)
+  } else {
+    lines.push(`> ❌ **Error**: ${String(error)}`)
+    lines.push(`> **Code**: UNKNOWN_ERROR`)
+  }
+
+  if (suggestion) {
+    lines.push(`> 💡 **Suggestion**: ${suggestion}`)
+  }
+
+  return lines.join('\n')
 }
 
+export function handleError(error: unknown): never {
+  const fmt = getGlobalFormat()
+  if (fmt === 'json') {
+    process.stderr.write(formatErrorOutput(error) + '\n')
+  } else {
+    process.stderr.write(formatErrorMarkdown(error) + '\n')
+  }
+  process.exit(1)
+}
