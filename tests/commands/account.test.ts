@@ -13,6 +13,7 @@ vi.mock('../../src/output/formatter', () => ({
   outputList: vi.fn(),
   output: vi.fn(),
   outputSuccess: vi.fn(),
+  getGlobalFormat: vi.fn().mockReturnValue('text'),
 }))
 vi.mock('../../src/utils/error', () => ({
   handleError: vi.fn()

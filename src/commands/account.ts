@@ -6,12 +6,13 @@ import {
   addAccount,
   removeAccount,
   setDefaultAccount,
+  renameAccount,
   getAccount,
 } from '../config/store.js'
 import type { Provider, AccountConfig } from '../config/types.js'
 import { gmailAuthFlow } from '../providers/gmail/auth.js'
 import { outlookAuthFlow } from '../providers/outlook/auth.js'
-import { output, outputList, outputSuccess } from '../output/formatter.js'
+import { output, outputList, outputSuccess, getGlobalFormat } from '../output/formatter.js'
 import { handleError, ConfigError } from '../utils/error.js'
 
 function prompt(question: string): Promise<string> {
@@ -85,12 +86,16 @@ export function accountList(): void {
       return
     }
 
+    const isJson = getGlobalFormat() === 'json'
+
     outputList(
       config.accounts.map((a) => ({
         alias: a.alias,
         provider: a.provider,
         email: a.email,
-        default: a.alias === config.default_account ? '✓' : '',
+        default: isJson
+          ? (a.alias === config.default_account)
+          : (a.alias === config.default_account ? '✓' : ''),
         created: a.created_at,
       })),
       [
@@ -129,6 +134,94 @@ export function accountInfo(alias?: string): void {
         : 'unknown',
       scopes: account.tokens.scope,
     })
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export function accountRename(oldAlias: string, newAlias: string): void {
+  try {
+    renameAccount(oldAlias, newAlias)
+    outputSuccess(`Account renamed: ${oldAlias} → ${newAlias}`)
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export async function accountValidate(alias?: string): Promise<void> {
+  try {
+    const config = loadConfig()
+    const accountsToCheck = alias
+      ? [getAccount(alias)]
+      : config.accounts
+
+    if (accountsToCheck.length === 0) {
+      output({ message: 'No accounts configured.' })
+      return
+    }
+
+    const results: Array<Record<string, unknown>> = []
+
+    for (const account of accountsToCheck) {
+      const result: Record<string, unknown> = {
+        alias: account.alias,
+        email: account.email,
+        provider: account.provider,
+      }
+
+      // Check token expiration
+      if (account.tokens.expires_at) {
+        const expiresAt = new Date(account.tokens.expires_at)
+        const now = new Date()
+        result.token_valid = expiresAt > now
+        result.token_expires_at = expiresAt.toISOString()
+        if (expiresAt <= now) {
+          result.issue = 'Token expired. Run: cli-mail account add ' + account.provider
+        }
+      } else {
+        result.token_valid = false
+        result.issue = 'No token expiration info'
+      }
+
+      // Check alias uniqueness
+      const dupes = config.accounts.filter((a) => a.alias === account.alias)
+      result.alias_unique = dupes.length === 1
+
+      results.push(result)
+    }
+
+    // Check default_account reference
+    const defaultValid = config.default_account
+      ? config.accounts.some((a) => a.alias === config.default_account)
+      : false
+
+    const isJson = getGlobalFormat() === 'json'
+    if (isJson) {
+      output({
+        default_account: config.default_account,
+        default_account_valid: defaultValid,
+        accounts: results,
+      })
+    } else {
+      if (!defaultValid && config.default_account) {
+        outputSuccess(`⚠ Default account "${config.default_account}" not found in accounts list`)
+      }
+      outputList(
+        results.map((r) => ({
+          ...r,
+          token_valid: r.token_valid ? '✓' : '✗',
+          alias_unique: r.alias_unique ? '✓' : '✗',
+        })),
+        [
+          { key: 'alias', label: 'Alias' },
+          { key: 'email', label: 'Email' },
+          { key: 'provider', label: 'Provider' },
+          { key: 'token_valid', label: 'Token' },
+          { key: 'alias_unique', label: 'Unique' },
+          { key: 'issue', label: 'Issue' },
+        ],
+      )
+    }
   } catch (error) {
     handleError(error)
   }

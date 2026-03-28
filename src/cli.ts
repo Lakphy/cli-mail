@@ -3,9 +3,21 @@
 import { Command } from 'commander'
 import { setGlobalFormat, type OutputFormat } from './output/formatter.js'
 
+// Module-level global account alias, set by the preAction hook
+let _globalAccountAlias: string | undefined
+
+export function getGlobalAccount(): string | undefined {
+  return _globalAccountAlias
+}
+
+/** @internal Reset for testing */
+export function _resetGlobalAccount(): void {
+  _globalAccountAlias = undefined
+}
+
 // Commands
-import { accountAdd, accountRemove, accountList, accountSwitch, accountInfo } from './commands/account.js'
-import { messageList, messageGet, messageRaw, messageSend, messageReply, messageForward, messageDelete, messageMove, messageMark, messageSearch, messageUntrash, messageBatchDelete, messageImport, messageCopy, messageTrash, messageBatchModify, messageInsert } from './commands/message.js'
+import { accountAdd, accountRemove, accountList, accountSwitch, accountInfo, accountRename, accountValidate } from './commands/account.js'
+import { messageList, messageGet, messageRaw, messageSend, messageReply, messageForward, messageDelete, messageMove, messageMark, messageSearch, messageUntrash, messageBatchDelete, messageImport, messageCopy, messageTrash, messageBatchModify, messageInsert, messageRecent, messageAll } from './commands/message.js'
 import { draftList, draftGet, draftCreate, draftUpdate, draftSend, draftDelete } from './commands/draft.js'
 import { folderList, folderGet, folderCreate, folderUpdate, folderDelete, folderMessages, folderMove, folderCopy } from './commands/folder.js'
 import { attachmentList, attachmentGet, attachmentDownload, attachmentAdd, attachmentDelete } from './commands/attachment.js'
@@ -31,6 +43,9 @@ export function createCli(): Command {
       const opts = thisCommand.opts()
       if (opts.format) {
         setGlobalFormat(opts.format as OutputFormat)
+      }
+      if (opts.account) {
+        _globalAccountAlias = opts.account
       }
     })
 
@@ -62,6 +77,16 @@ export function createCli(): Command {
     .command('info [alias]')
     .description('Show account details')
     .action((alias?: string) => accountInfo(alias))
+
+  account
+    .command('rename <old-alias> <new-alias>')
+    .description('Rename an account alias')
+    .action((oldAlias: string, newAlias: string) => accountRename(oldAlias, newAlias))
+
+  account
+    .command('validate [alias]')
+    .description('Validate account configuration and tokens')
+    .action((alias?: string) => accountValidate(alias))
 
   // ==================== Message ====================
   const message = program.command('message').alias('msg').description('Email message operations')
@@ -200,6 +225,24 @@ export function createCli(): Command {
     .requiredOption('--file <path>', 'Path to raw MIME file')
     .option('-a, --account <alias>', 'Account alias')
     .action((opts) => messageInsert(opts))
+
+  message
+    .command('recent')
+    .description('List recent messages by time range')
+    .option('--hours <n>', 'Number of hours to look back (default: 24)')
+    .option('--since <date>', 'ISO 8601 date to start from')
+    .option('--top <n>', 'Number of messages to return', '20')
+    .option('-a, --account <alias>', 'Account alias')
+    .action((opts) => messageRecent(opts))
+
+  // ==================== Inbox All (cross-account) ====================
+  program
+    .command('inbox')
+    .description('Cross-account inbox aggregation')
+    .option('--hours <n>', 'Number of hours to look back (default: 24)')
+    .option('--since <date>', 'ISO 8601 date to start from')
+    .option('--top <n>', 'Messages per account', '10')
+    .action((opts) => messageAll(opts))
 
   // ==================== Draft ====================
   const draft = program.command('draft').description('Draft operations')

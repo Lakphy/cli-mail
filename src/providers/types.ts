@@ -115,6 +115,7 @@ export interface ListOptions {
   folder?: string
   orderBy?: string
   pageToken?: string
+  filter?: string
 }
 
 export interface ReplyOptions {

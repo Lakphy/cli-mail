@@ -29,7 +29,7 @@ export class HttpClient {
     path: string,
     options: {
       body?: unknown
-      query?: Record<string, string | number | boolean | undefined>
+      query?: Record<string, string | number | boolean | string[] | undefined>
       headers?: Record<string, string>
       rawBody?: string | Buffer
       rawResponse?: boolean
@@ -53,7 +53,13 @@ export class HttpClient {
     if (options.query) {
       const params = new URLSearchParams()
       for (const [key, value] of Object.entries(options.query)) {
-        if (value !== undefined) {
+        if (value === undefined) continue
+        if (Array.isArray(value)) {
+          // Support repeated query params (e.g. metadataHeaders=From&metadataHeaders=To)
+          for (const item of value) {
+            params.append(key, String(item))
+          }
+        } else {
           params.set(key, String(value))
         }
       }
@@ -139,7 +145,7 @@ export class HttpClient {
     }
   }
 
-  async get<T>(path: string, query?: Record<string, string | number | boolean | undefined>, headers?: Record<string, string>): Promise<T> {
+  async get<T>(path: string, query?: Record<string, string | number | boolean | string[] | undefined>, headers?: Record<string, string>): Promise<T> {
     return this.request<T>('GET', path, { query, headers })
   }
 
@@ -163,7 +169,7 @@ export class HttpClient {
     return this.request<T>('DELETE', path)
   }
 
-  async getRaw(path: string, query?: Record<string, string | number | boolean | undefined>): Promise<Response> {
+  async getRaw(path: string, query?: Record<string, string | number | boolean | string[] | undefined>): Promise<Response> {
     return this.request<Response>('GET', path, { query, rawResponse: true })
   }
 }

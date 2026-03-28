@@ -57,7 +57,13 @@ export async function listMessages(
   const query: Record<string, string | number | boolean | undefined> = {
     '$top': options.top || 20,
     '$select': 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,importance,categories,parentFolderId',
-    '$orderby': options.orderBy || 'receivedDateTime desc',
+  }
+
+  // Microsoft Graph API does not support $orderby with $search
+  // When searching, we sort client-side instead
+  const isSearch = !!options.query
+  if (!isSearch) {
+    query['$orderby'] = options.orderBy || 'receivedDateTime desc'
   }
 
   if (options.skip) {
@@ -66,6 +72,9 @@ export async function listMessages(
   if (options.query) {
     query['$search'] = `"${options.query}"`
   }
+  if (options.filter) {
+    query['$filter'] = options.filter
+  }
 
   const path = options.folder
     ? `/mailFolders/${options.folder}/messages`
@@ -73,8 +82,19 @@ export async function listMessages(
 
   const list = await client.get<GraphMessageList>(path, query)
 
+  let messages = (list.value || []).map(normalizeMessageSummary)
+
+  // Client-side sort by date descending when search is used (since $orderby is not supported)
+  if (isSearch) {
+    messages = messages.sort((a, b) => {
+      const dateA = a.date ? new Date(a.date).getTime() : 0
+      const dateB = b.date ? new Date(b.date).getTime() : 0
+      return dateB - dateA
+    })
+  }
+
   return {
-    messages: (list.value || []).map(normalizeMessageSummary),
+    messages,
     nextLink: list['@odata.nextLink'],
   }
 }

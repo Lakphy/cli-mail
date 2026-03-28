@@ -71,7 +71,10 @@ export async function listMessages(
   // Fetch each message's metadata
   const messages = await Promise.all(
     list.messages.map((m) =>
-      client.get<GmailMessage>(`/messages/${m.id}`, { format: 'metadata', metadataHeaders: 'From,To,Subject,Date' }),
+      client.get<GmailMessage>(`/messages/${m.id}`, {
+        format: 'metadata',
+        metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+      }),
     ),
   )
 

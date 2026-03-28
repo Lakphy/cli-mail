@@ -5,6 +5,7 @@ import type { HttpClient } from '../utils/http.js'
 import { createGmailClient } from '../providers/gmail/client.js'
 import { createOutlookClient } from '../providers/outlook/client.js'
 import { getAccount } from '../config/store.js'
+import { getGlobalAccount } from '../cli.js'
 
 export interface ResolvedAccount {
   account: AccountConfig
@@ -12,7 +13,9 @@ export interface ResolvedAccount {
 }
 
 export function resolveAccount(alias?: string): ResolvedAccount {
-  const account = getAccount(alias)
+  // Subcommand's --account takes precedence, then global --account, then default
+  const effectiveAlias = alias || getGlobalAccount()
+  const account = getAccount(effectiveAlias)
   const client =
     account.provider === 'gmail'
       ? createGmailClient(account)

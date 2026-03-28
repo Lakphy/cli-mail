@@ -110,6 +110,30 @@ export function setDefaultAccount(alias: string): void {
   saveConfig(config)
 }
 
+export function renameAccount(oldAlias: string, newAlias: string): void {
+  const config = loadConfig()
+  const account = config.accounts.find((a) => a.alias === oldAlias)
+  if (!account) {
+    throw new ConfigError(`Account not found: ${oldAlias}`)
+  }
+
+  // Check new alias doesn't conflict
+  const conflict = config.accounts.find((a) => a.alias === newAlias)
+  if (conflict) {
+    throw new ConfigError(`Alias already in use: ${newAlias}`)
+  }
+
+  account.alias = newAlias
+  account.updated_at = new Date().toISOString()
+
+  // Update default_account reference if it pointed to the old alias
+  if (config.default_account === oldAlias) {
+    config.default_account = newAlias
+  }
+
+  saveConfig(config)
+}
+
 export function updateAccountTokens(
   alias: string,
   tokens: AccountConfig['tokens'],
