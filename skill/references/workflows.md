@@ -42,7 +42,7 @@ cli-mail msg search --query "<query>" --account <alias>
 Show them:
 ```
 准备发送邮件：
-账号: personal (user@gmail.com)
+账号: user@gmail.com (Gmail)
 收件人: recipient@example.com
 主题: Meeting Tomorrow
 正文: Hi, let's meet at 3pm.
@@ -211,9 +211,9 @@ cli-mail -f json msg list --account personal | jq '.[].id'
 **Example conversation:**
 ```
 User: 查看邮件
-AI: 你有两个账号：personal (user@gmail.com) 和 work (user@company.com)。要查看哪个账号的邮件？
-User: personal
-AI: [runs] cli-mail msg list --account personal --top 10
+AI: 你有两个账号：user@gmail.com (Gmail) 和 user@company.com (Outlook)。要查看哪个账号的邮件？
+User: Gmail
+AI: [runs] cli-mail msg list --account user@gmail.com --top 10
 ```
 
 ---

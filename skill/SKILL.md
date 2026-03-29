@@ -9,7 +9,7 @@ This skill helps users interact with their Gmail and Outlook accounts through th
 
 ## Core Principles
 
-**Account awareness**: Always check which accounts exist before operations. Users may have multiple accounts with different aliases.
+**Account awareness**: Always check which accounts exist before operations. By default, each account uses its email address as the identifier (alias). Users may optionally set custom aliases for convenience.
 
 **Confirmation for sensitive actions**: Before sending emails or deleting messages, confirm the details with the user - especially verify the recipient addresses and account being used.
 
@@ -77,18 +77,24 @@ npm link
 ### Step 3: Add account
 
 ```bash
-cli-mail account add gmail --alias personal
-# or
-cli-mail account add outlook --alias work
+# Recommended: simply add the account (email address is automatically used as alias)
+cli-mail account add gmail
+cli-mail account add outlook
 ```
 
-The command will prompt for Client ID and Client Secret, then open a browser for OAuth authorization.
+The command will prompt for Client ID and Client Secret, then open a browser for OAuth authorization. After successful authentication, the account is saved with your **email address as the alias** (e.g., `user@gmail.com`).
+
+> **Custom alias (optional)**: If you prefer a shorter name, you can set one with `--alias`:
+> ```bash
+> cli-mail account add gmail --alias personal
+> ```
+> This is mainly useful when managing multiple accounts and you want easier-to-type names.
 
 ### Step 4: Verify setup
 
 ```bash
 cli-mail account list
-cli-mail profile --account personal
+cli-mail profile    # uses default account
 ```
 
 ## Quick Start: Typical User Interactions
@@ -100,9 +106,9 @@ cli-mail profile --account personal
 cli-mail account list
 ```
 
-**Step 2**: List recent emails
+**Step 2**: List recent emails (use the alias shown in account list — it's the email address by default)
 ```bash
-cli-mail msg list --account personal --top 5
+cli-mail msg list --account user@gmail.com --top 5
 ```
 
 **Step 3**: Show results to user in readable format
@@ -113,7 +119,7 @@ cli-mail msg list --account personal --top 5
 
 **Step 1**: Identify account and provider (Gmail or Outlook)
 ```bash
-cli-mail account info personal
+cli-mail account info user@gmail.com
 ```
 
 **Step 2**: Construct appropriate search query
@@ -122,7 +128,7 @@ cli-mail account info personal
 
 **Step 3**: Execute search
 ```bash
-cli-mail msg search --query "from:boss@company.com is:unread" --account personal
+cli-mail msg search --query "from:boss@company.com is:unread" --account user@gmail.com
 ```
 
 For complex queries, read `references/search-syntax.md`
@@ -357,11 +363,11 @@ cli-mail draft send <draft-id> --account personal
 
 The tool uses this priority order to determine which account to use:
 
-1. `--account <alias>` flag in the command
+1. `--account <alias>` flag in the command (alias = email address by default, or a custom name if `--alias` was used)
 2. Default account (set via `cli-mail account switch`)
 3. First account in the config file
 
-Always specify `--account` when the user has multiple accounts to avoid confusion.
+When only one account exists, you can usually omit `--account`. For multiple accounts, always specify it to avoid confusion.
 
 ## Output Formats
 
@@ -390,7 +396,7 @@ This outputs structured JSON that you can parse with `jq` or in your code. Error
 - Ask user to remove and re-add the account:
   ```bash
   cli-mail account remove <alias>
-  cli-mail account add <provider> --alias <alias>
+  cli-mail account add <provider>
   ```
 
 **"Client ID required" during setup:**
@@ -421,7 +427,8 @@ This outputs structured JSON that you can parse with `jq` or in your code. Error
 ## Command Reference Quick Guide
 
 ### Account Commands
-- `account add <gmail|outlook> [--alias <name>]` - Add account
+- `account add <gmail|outlook>` - Add account (email address is used as alias by default)
+  - `--alias <name>` - Optional: set a custom alias instead of email address
 - `account list` - List all accounts
 - `account remove <alias>` - Remove account
 - `account switch <alias>` - Set default account
@@ -542,9 +549,11 @@ This outputs structured JSON that you can parse with `jq` or in your code. Error
 
 **"帮我查看最新的邮件"**
 ```bash
-cli-mail message list --account personal --top 5
+cli-mail message list --top 5
 # Or use the new time-based recent command:
-cli-mail msg recent --hours 6 --account personal
+cli-mail msg recent --hours 6
+# Specify account if user has multiple:
+cli-mail msg recent --hours 6 --account user@gmail.com
 ```
 
 **"查看所有邮箱的最新邮件"**
@@ -555,28 +564,28 @@ cli-mail inbox --hours 12
 **"发一封邮件给 bob@example.com"**
 First confirm details, then:
 ```bash
-cli-mail message send --account personal --to bob@example.com --subject "..." --body "..."
+cli-mail message send --to bob@example.com --subject "..." --body "..."
 ```
 
 **"搜索来自老板的未读邮件"**
 ```bash
-cli-mail message search --query "from:boss@company.com is:unread" --account work
+cli-mail message search --query "from:boss@company.com is:unread"
 ```
 
 **"下载这封邮件的附件"**
 ```bash
 # First list attachments
-cli-mail att list <message-id> --account personal
+cli-mail att list <message-id>
 # Then download
-cli-mail att download <message-id> <attachment-id> -o ~/Downloads/ --account personal
+cli-mail att download <message-id> <attachment-id> -o ~/Downloads/
 ```
 
 **"把这封邮件移到归档"**
 ```bash
 # First find the archive folder ID
-cli-mail folder list --account personal
+cli-mail folder list
 # Then move
-cli-mail message move <message-id> --to-folder <archive-folder-id> --account personal
+cli-mail message move <message-id> --to-folder <archive-folder-id>
 ```
 
 **"重命名邮箱别名"**

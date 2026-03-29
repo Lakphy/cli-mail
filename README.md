@@ -13,7 +13,7 @@ AI-oriented CLI email management tool for Gmail and Outlook. Designed as a bridg
 
 - **AI-first**: Default output is markdown text — tables, key-value pairs, structured data that AI agents parse easily.
 - **No TUI**: No colors, spinners, or interactive prompts during operation (only during initial OAuth setup).
-- **Multi-account**: Manage N accounts across Gmail and Outlook with aliases.
+- **Multi-account**: Manage N accounts across Gmail and Outlook. Each account uses its email address as the default identifier; custom aliases are optional.
 - **Full API coverage**: Comprehensive REST API capabilities exposed as CLI commands.
 - **Dependency Minimalist**: Only `commander` at runtime; everything else uses Node.js built-ins.
 
@@ -91,7 +91,7 @@ The AI will handle the commands for you with proper confirmations.
 
 - **AI 优先**: 默认输出为 Markdown 格式（表格、键值对等），方便 AI 代理精准解析。
 - **无 TUI 干扰**: 运行过程中没有颜色代码、加载动画或交互式提示（仅在初始 OAuth 登录时除外）。
-- **多账号支持**: 通过别名机制，跨 Gmail 和 Outlook 灵活管理任意数量的账号。
+- **多账号支持**: 跨 Gmail 和 Outlook 灵活管理任意数量的账号，默认使用邮箱地址作为标识，也可自定义别名。
 - **全量 API 覆盖**: 将两大平台 REST API 的核心功能以原生的 CLI 命令全量暴露。
 - **极简依赖**: 运行时仅依赖 `commander`，其余全部使用 Node.js 原生模块实现。
 
@@ -168,12 +168,17 @@ AI 会自动帮你执行相应的命令，并在必要时进行确认。
 ```bash
 # 1. Add an account (Browser will open & ask for your Client ID)
 # 1. 绑定账号 (终端会要求输入你的 Client ID，并将自动打开浏览器授权)
-cli-mail account add gmail --alias personal
-cli-mail account add outlook --alias work
+cli-mail account add gmail          # alias defaults to your email address
+cli-mail account add outlook        # same — email address as alias
+
+# Optional: set a custom alias for convenience
+# 可选：设置自定义别名
+# cli-mail account add gmail --alias personal
+# cli-mail account add outlook --alias work
 
 # 2. List your emails (Markdown table output)
 # 2. 查看邮件列表 (输出 Markdown 表格)
-cli-mail message list --account personal
+cli-mail message list
 
 # 3. Read a specific email
 # 3. 阅读指定邮件内容
@@ -208,11 +213,13 @@ cli-mail -f json message list --top 5
 ### 👤 Account / 账号管理
 
 ```bash
-cli-mail account add <gmail|outlook> [--alias <name>] # Add / 添加账号
+cli-mail account add <gmail|outlook>                  # Add / 添加账号 (默认使用邮箱地址作为别名)
+cli-mail account add <gmail|outlook> --alias <name>   # Add with custom alias / 添加并自定义别名
 cli-mail account list                                 # List / 列出所有账号
 cli-mail account remove <alias>                       # Remove / 移除账号
 cli-mail account switch <alias>                       # Set default / 设置默认账号
 cli-mail account info [alias]                         # Info / 查看账号详情
+cli-mail account rename <old-alias> <new-alias>       # Rename / 重命名别名
 ```
 
 ### ✉️ Messages / 邮件操作 (Alias: `msg`)
