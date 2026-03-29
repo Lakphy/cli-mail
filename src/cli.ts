@@ -36,7 +36,7 @@ export function createCli(): Command {
   const program = new Command()
     .name('cli-mail')
     .description('AI-oriented CLI email management tool for Gmail and Outlook')
-    .version('0.1.0')
+    .version(__VERSION__)
     .option('-f, --format <format>', 'Output format: markdown (default) or json', 'markdown')
     .option('-a, --account <alias>', 'Account alias to use')
     .hook('preAction', (thisCommand) => {

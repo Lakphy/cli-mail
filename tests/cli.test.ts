@@ -1,4 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+const pkg = require('../package.json')
 
 // ==========================================================
 // CLI Structure Tests
@@ -10,7 +14,7 @@ describe('CLI', () => {
   test('creates program with correct name and version', () => {
     const program = createCli()
     expect(program.name()).toBe('cli-mail')
-    expect(program.version()).toBe('0.1.0')
+    expect(program.version()).toBe(pkg.version)
   })
 
   test('has all top-level commands', () => {
