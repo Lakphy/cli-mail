@@ -3,7 +3,7 @@ import { output, outputList, outputSuccess, outputRaw } from '../output/formatte
 import { handleError, ProviderError } from '../utils/error.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
 import * as outlookMessages from '../providers/outlook/messages.js'
-import { loadConfig } from '../config/store.js'
+import { loadConfig, getAccountsByTag } from '../config/store.js'
 import { createGmailClient } from '../providers/gmail/client.js'
 import { createOutlookClient } from '../providers/outlook/client.js'
 import { readFileSync } from 'node:fs'
@@ -492,12 +492,20 @@ export async function messageRecent(
 // ==================== Cross-account Aggregation ====================
 
 export async function messageAll(
-  opts: { hours?: string; since?: string; top?: string },
+  opts: { hours?: string; since?: string; top?: string; tag?: string },
 ): Promise<void> {
   try {
     const config = loadConfig()
-    if (config.accounts.length === 0) {
-      output({ message: 'No accounts configured. Run: cli-mail account add <provider>' })
+
+    // Filter accounts by tag if specified
+    let accountsToQuery = config.accounts
+    if (opts.tag) {
+      accountsToQuery = getAccountsByTag(opts.tag)
+    }
+
+    if (accountsToQuery.length === 0) {
+      const tagMsg = opts.tag ? ` with tag "${opts.tag}"` : ''
+      output({ message: `No accounts configured${tagMsg}. Run: cli-mail account add <provider>` })
       return
     }
 
@@ -517,7 +525,7 @@ export async function messageAll(
 
     const allMessages: Array<Record<string, unknown>> = []
 
-    for (const accountConfig of config.accounts) {
+    for (const accountConfig of accountsToQuery) {
       try {
         const client = accountConfig.provider === 'gmail'
           ? createGmailClient(accountConfig)

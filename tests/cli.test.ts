@@ -298,4 +298,64 @@ describe('CLI', () => {
     const addCmd = fwdCmd?.commands.find((c) => c.name() === 'add')
     expect(addCmd?.options.map((o) => o.long)).toContain('--email')
   })
+
+  // ---- Tag / Group command tests ----
+
+  test('group command exists at top level', () => {
+    const program = createCli()
+    const names = program.commands.map((c) => c.name())
+    expect(names).toContain('group')
+  })
+
+  test('group command has list and show subcommands', () => {
+    const program = createCli()
+    const groupCmd = program.commands.find((c) => c.name() === 'group')
+    const subNames = groupCmd?.commands.map((c) => c.name()) || []
+    expect(subNames).toContain('list')
+    expect(subNames).toContain('show')
+  })
+
+  test('group show takes <tag> argument', () => {
+    const program = createCli()
+    const groupCmd = program.commands.find((c) => c.name() === 'group')
+    const showCmd = groupCmd?.commands.find((c) => c.name() === 'show')
+    expect(showCmd).toBeDefined()
+    const argNames = showCmd?.registeredArguments?.map((a: any) => a.name()) || []
+    expect(argNames).toContain('tag')
+  })
+
+  test('account add has --tag option', () => {
+    const program = createCli()
+    const accCmd = program.commands.find((c) => c.name() === 'account')
+    const addCmd = accCmd?.commands.find((c) => c.name() === 'add')
+    const flags = addCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--tag')
+  })
+
+  test('account list has --tag option', () => {
+    const program = createCli()
+    const accCmd = program.commands.find((c) => c.name() === 'account')
+    const listCmd = accCmd?.commands.find((c) => c.name() === 'list')
+    const flags = listCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--tag')
+  })
+
+  test('account tag subcommand exists with <alias> [tag] and --remove', () => {
+    const program = createCli()
+    const accCmd = program.commands.find((c) => c.name() === 'account')
+    const tagCmd = accCmd?.commands.find((c) => c.name() === 'tag')
+    expect(tagCmd).toBeDefined()
+    const argNames = tagCmd?.registeredArguments?.map((a: any) => a.name()) || []
+    expect(argNames).toContain('alias')
+    expect(argNames).toContain('tag')
+    const flags = tagCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--remove')
+  })
+
+  test('inbox command has --tag option', () => {
+    const program = createCli()
+    const inboxCmd = program.commands.find((c) => c.name() === 'inbox')
+    const flags = inboxCmd?.options.map((o) => o.long) || []
+    expect(flags).toContain('--tag')
+  })
 })

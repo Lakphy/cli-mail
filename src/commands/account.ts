@@ -8,6 +8,8 @@ import {
   setDefaultAccount,
   renameAccount,
   getAccount,
+  setAccountTag,
+  validateTag,
 } from '../config/store.js'
 import type { Provider, AccountConfig } from '../config/types.js'
 import { gmailAuthFlow } from '../providers/gmail/auth.js'
@@ -25,9 +27,14 @@ function prompt(question: string): Promise<string> {
   })
 }
 
-export async function accountAdd(provider: string, alias?: string): Promise<void> {
+export async function accountAdd(provider: string, opts?: { alias?: string; tag?: string }): Promise<void> {
   try {
     const validProvider = validateProvider(provider)
+
+    // Validate tag early before interactive prompts
+    if (opts?.tag) {
+      validateTag(opts.tag)
+    }
 
     const clientId = await prompt('Client ID: ')
     const clientSecret = await prompt('Client Secret: ')
@@ -49,10 +56,11 @@ export async function accountAdd(provider: string, alias?: string): Promise<void
       email = result.email
     }
 
-    const accountAlias = alias || email
+    const accountAlias = opts?.alias || email
 
     const account: AccountConfig = {
       alias: accountAlias,
+      ...(opts?.tag ? { tag: opts.tag } : {}),
       provider: validProvider,
       email,
       client_id: clientId,
@@ -63,7 +71,8 @@ export async function accountAdd(provider: string, alias?: string): Promise<void
     }
 
     addAccount(account)
-    outputSuccess(`Account added: ${accountAlias} (${email}) [${validProvider}]`)
+    const tagInfo = opts?.tag ? ` [tag: ${opts.tag}]` : ''
+    outputSuccess(`Account added: ${accountAlias} (${email}) [${validProvider}]${tagInfo}`)
   } catch (error) {
     handleError(error)
   }
@@ -78,17 +87,36 @@ export function accountRemove(alias: string): void {
   }
 }
 
-export function accountList(): void {
+export function accountList(opts?: { tag?: string }): void {
   try {
     const config = loadConfig()
-    if (config.accounts.length === 0) {
-      output({ message: 'No accounts configured. Run: cli-mail account add <provider>' })
+    let accounts = config.accounts
+
+    // Filter by tag if specified
+    if (opts?.tag) {
+      accounts = opts.tag === 'default'
+        ? accounts.filter((a) => !a.tag)
+        : accounts.filter((a) => a.tag === opts.tag)
+    }
+
+    if (accounts.length === 0) {
+      const tagMsg = opts?.tag ? ` with tag "${opts.tag}"` : ''
+      output({ message: `No accounts configured${tagMsg}. Run: cli-mail account add <provider>` })
       return
     }
 
+    // Sort by tag (default first) then by alias
+    const sorted = [...accounts].sort((a, b) => {
+      const tagA = a.tag || ''
+      const tagB = b.tag || ''
+      if (tagA !== tagB) return tagA.localeCompare(tagB)
+      return a.alias.localeCompare(b.alias)
+    })
+
     outputList(
-      config.accounts.map((a) => ({
+      sorted.map((a) => ({
         alias: a.alias,
+        tag: a.tag || 'default',
         provider: a.provider,
         email: a.email,
         default: a.alias === config.default_account,
@@ -96,6 +124,7 @@ export function accountList(): void {
       })),
       [
         { key: 'alias', label: 'Alias' },
+        { key: 'tag', label: 'Tag' },
         { key: 'provider', label: 'Provider' },
         { key: 'email', label: 'Email' },
         { key: 'default', label: 'Default' },
@@ -200,6 +229,24 @@ export async function accountValidate(alias?: string): Promise<void> {
       default_account_valid: defaultValid,
       accounts: results,
     })
+  } catch (error) {
+    handleError(error)
+  }
+}
+
+export function accountTag(alias: string, tag?: string, remove?: boolean): void {
+  try {
+    if (remove) {
+      setAccountTag(alias, null)
+      outputSuccess(`Tag removed from account: ${alias}`)
+    } else if (tag) {
+      setAccountTag(alias, tag)
+      outputSuccess(`Account "${alias}" tagged as: ${tag}`)
+    } else {
+      // Show current tag
+      const account = getAccount(alias)
+      output({ alias: account.alias, tag: account.tag || 'default' })
+    }
   } catch (error) {
     handleError(error)
   }

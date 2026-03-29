@@ -176,6 +176,12 @@ cli-mail account add outlook        # same — email address as alias
 # cli-mail account add gmail --alias personal
 # cli-mail account add outlook --alias work
 
+# Optional: tag accounts for grouping
+# 可选：为账号添加标签以实现分组
+# cli-mail account add gmail --tag work
+# cli-mail account add outlook --tag personal
+# cli-mail account tag <alias> <tag>       # tag an existing account / 为已有账号设置标签
+
 # 2. List your emails (Markdown table output)
 # 2. 查看邮件列表 (输出 Markdown 表格)
 cli-mail message list
@@ -195,6 +201,11 @@ cli-mail message send --to bob@example.com --subject "Hello" --body "Hi Bob!"
 # 6. Read emails as JSON (Ideal for structured AI parsing)
 # 6. 以 JSON 格式读取邮件 (非常适合 AI 结构化解析)
 cli-mail -f json message list --top 5
+
+# 7. View inbox by group (cross-account)
+# 7. 按分组查看收件箱（跨账号）
+cli-mail inbox --tag work              # only work-tagged accounts / 仅 work 标签的账号
+cli-mail group list                    # list all groups / 列出所有分组
 ```
 
 ---
@@ -215,11 +226,15 @@ cli-mail -f json message list --top 5
 ```bash
 cli-mail account add <gmail|outlook>                  # Add / 添加账号 (默认使用邮箱地址作为别名)
 cli-mail account add <gmail|outlook> --alias <name>   # Add with custom alias / 添加并自定义别名
+cli-mail account add <gmail|outlook> --tag <tag>      # Add with tag for grouping / 添加并设置分组标签
 cli-mail account list                                 # List / 列出所有账号
+cli-mail account list --tag <tag>                     # List by tag / 按标签筛选账号
 cli-mail account remove <alias>                       # Remove / 移除账号
 cli-mail account switch <alias>                       # Set default / 设置默认账号
 cli-mail account info [alias]                         # Info / 查看账号详情
 cli-mail account rename <old-alias> <new-alias>       # Rename / 重命名别名
+cli-mail account tag <alias> [tag]                    # Set/show tag / 设置或查看标签
+cli-mail account tag <alias> --remove                 # Remove tag / 移除标签
 ```
 
 ### ✉️ Messages / 邮件操作 (Alias: `msg`)
@@ -360,6 +375,23 @@ cli-mail delegate remove <email>        # Remove delegate / 移除委托人
 cli-mail forwarding-address list        # List addresses / 列出转发地址
 cli-mail forwarding-address add --email <e>  # Add address / 添加转发地址
 cli-mail forwarding-address remove <email>   # Remove address / 移除转发地址
+```
+
+### 🏷️ Groups / 账号分组
+
+Organize accounts into groups using tags. Accounts without a tag belong to the `default` group.
+使用标签将账号组织到不同分组中。没有标签的账号属于 `default` 默认分组。
+
+```bash
+cli-mail group list                     # List all groups / 列出所有分组
+cli-mail group show <tag>               # Show accounts in a group / 查看分组下的账号
+```
+
+### 📥 Inbox / 跨账号收件箱
+
+```bash
+cli-mail inbox [--hours <n>] [--since <date>] [--top <n>]                  # All accounts / 所有账号
+cli-mail inbox --tag <tag> [--hours <n>] [--since <date>] [--top <n>]      # Filter by tag / 按标签筛选
 ```
 
 ---

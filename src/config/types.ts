@@ -12,6 +12,7 @@ export interface OAuthTokens {
 
 export interface AccountConfig {
   alias: string
+  tag?: string
   provider: Provider
   email: string
   client_id: string

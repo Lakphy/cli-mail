@@ -17,7 +17,7 @@ export function _resetGlobalAccount(): void {
 }
 
 // Commands
-import { accountAdd, accountRemove, accountList, accountSwitch, accountInfo, accountRename, accountValidate } from './commands/account.js'
+import { accountAdd, accountRemove, accountList, accountSwitch, accountInfo, accountRename, accountValidate, accountTag } from './commands/account.js'
 import { messageList, messageGet, messageRaw, messageSend, messageReply, messageForward, messageDelete, messageMove, messageMark, messageSearch, messageUntrash, messageBatchDelete, messageImport, messageCopy, messageTrash, messageBatchModify, messageInsert, messageRecent, messageAll } from './commands/message.js'
 import { draftList, draftGet, draftCreate, draftUpdate, draftSend, draftDelete } from './commands/draft.js'
 import { folderList, folderGet, folderCreate, folderUpdate, folderDelete, folderMessages, folderMove, folderCopy } from './commands/folder.js'
@@ -31,6 +31,7 @@ import { historyList } from './commands/history.js'
 import { sendAsList, sendAsGet, sendAsCreate, sendAsDelete } from './commands/send-as.js'
 import { delegateList, delegateAdd, delegateRemove } from './commands/delegate.js'
 import { fwdAddrList, fwdAddrAdd, fwdAddrRemove } from './commands/forwarding-address.js'
+import { groupList, groupShow } from './commands/group.js'
 
 
 export function createCli(): Command {
@@ -63,7 +64,8 @@ export function createCli(): Command {
     .command('add <provider>')
     .description('Add a new email account (gmail or outlook)')
     .option('--alias <alias>', 'Custom alias for the account')
-    .action((provider: string, opts: { alias?: string }) => accountAdd(provider, opts.alias))
+    .option('--tag <tag>', 'Tag for grouping accounts (e.g. work, personal)')
+    .action((provider: string, opts: { alias?: string; tag?: string }) => accountAdd(provider, opts))
 
   account
     .command('remove <alias>')
@@ -73,7 +75,8 @@ export function createCli(): Command {
   account
     .command('list')
     .description('List all configured accounts')
-    .action(() => accountList())
+    .option('--tag <tag>', 'Filter accounts by tag')
+    .action((opts: { tag?: string }) => accountList(opts))
 
   account
     .command('switch <alias>')
@@ -94,6 +97,12 @@ export function createCli(): Command {
     .command('validate [alias]')
     .description('Validate account configuration and tokens')
     .action((alias?: string) => accountValidate(alias))
+
+  account
+    .command('tag <alias> [tag]')
+    .description('Set, show, or remove a tag on an account')
+    .option('--remove', 'Remove the tag from the account')
+    .action((alias: string, tag?: string, opts?: { remove?: boolean }) => accountTag(alias, tag, opts?.remove))
 
   // ==================== Message ====================
   const message = program.command('message').alias('msg').description('Email message operations')
@@ -249,7 +258,21 @@ export function createCli(): Command {
     .option('--hours <n>', 'Number of hours to look back (default: 24)')
     .option('--since <date>', 'ISO 8601 date to start from')
     .option('--top <n>', 'Messages per account', '10')
+    .option('--tag <tag>', 'Filter by account tag (e.g. work, personal)')
     .action((opts) => messageAll(opts))
+
+  // ==================== Group ====================
+  const group = program.command('group').description('View accounts organized by tags')
+
+  group
+    .command('list')
+    .description('List all account groups/tags')
+    .action(() => groupList())
+
+  group
+    .command('show <tag>')
+    .description('Show accounts in a specific group/tag')
+    .action((tag: string) => groupShow(tag))
 
   // ==================== Draft ====================
   const draft = program.command('draft').description('Draft operations')

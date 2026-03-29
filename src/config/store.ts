@@ -168,4 +168,70 @@ export function updateAccountTokens(
   saveConfig(config)
 }
 
+// ==================== Tag Management ====================
+
+const TAG_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,31}$/
+
+/** Validate a tag name: alphanumeric + hyphens, 1-32 chars, cannot be "default" */
+export function validateTag(tag: string): void {
+  if (tag === 'default') {
+    throw new ConfigError('"default" is a reserved group name and cannot be used as a tag')
+  }
+  if (!TAG_REGEX.test(tag)) {
+    throw new ConfigError(
+      `Invalid tag: "${tag}". Tags must be 1-32 characters, alphanumeric and hyphens only, starting with a letter or number.`,
+    )
+  }
+}
+
+/** Set or remove a tag on an account */
+export function setAccountTag(alias: string, tag: string | null): void {
+  const config = loadConfig()
+  const account = config.accounts.find((a) => a.alias === alias)
+  if (!account) {
+    throw new ConfigError(`Account not found: ${alias}`)
+  }
+
+  if (tag !== null) {
+    validateTag(tag)
+    account.tag = tag
+  } else {
+    delete account.tag
+  }
+
+  account.updated_at = new Date().toISOString()
+  saveConfig(config)
+}
+
+/** Get accounts filtered by tag. If tag is "default", returns accounts without a tag. */
+export function getAccountsByTag(tag: string): AccountConfig[] {
+  const config = loadConfig()
+  if (tag === 'default') {
+    return config.accounts.filter((a) => !a.tag)
+  }
+  return config.accounts.filter((a) => a.tag === tag)
+}
+
+/** List all unique tags across accounts, always including "default" if any untagged accounts exist */
+export function listTags(): Array<{ tag: string; count: number }> {
+  const config = loadConfig()
+  const tagMap = new Map<string, number>()
+
+  for (const account of config.accounts) {
+    const t = account.tag || 'default'
+    tagMap.set(t, (tagMap.get(t) || 0) + 1)
+  }
+
+  // Sort: "default" first, then alphabetical
+  const entries = Array.from(tagMap.entries())
+  entries.sort((a, b) => {
+    if (a[0] === 'default') return -1
+    if (b[0] === 'default') return 1
+    return a[0].localeCompare(b[0])
+  })
+
+  return entries.map(([tag, count]) => ({ tag, count }))
+}
+
 export { CONFIG_DIR, CONFIG_FILE }
+
