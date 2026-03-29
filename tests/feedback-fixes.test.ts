@@ -150,23 +150,21 @@ describe('Outlook Search Fix', () => {
 
 // --- 4. Config store: renameAccount ---
 
-import { renameAccount, loadConfig, saveConfig, addAccount, setDefaultAccount } from '../src/config/store'
+import { renameAccount, loadConfig, saveConfig, addAccount, setDefaultAccount, setConfigPath, resetConfigPath } from '../src/config/store'
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { ConfigError } from '../src/utils/error'
 
 describe('Account Rename', () => {
-  const testConfigDir = join(homedir(), '.cli-mail')
+  const testConfigDir = join(import.meta.dirname, '..', '.test-config-rename')
   const testConfigFile = join(testConfigDir, 'accounts.json')
-  let originalConfig: string | null = null
 
   beforeEach(() => {
-    // Save original config if exists
-    if (existsSync(testConfigFile)) {
-      const { readFileSync } = require('node:fs')
-      originalConfig = readFileSync(testConfigFile, 'utf-8')
+    // Redirect config to isolated test directory
+    if (!existsSync(testConfigDir)) {
+      mkdirSync(testConfigDir, { recursive: true })
     }
+    setConfigPath(testConfigFile)
 
     // Set up a test config
     const testConfig = {
@@ -194,16 +192,13 @@ describe('Account Rename', () => {
         },
       ],
     }
-    if (!existsSync(testConfigDir)) {
-      mkdirSync(testConfigDir, { recursive: true })
-    }
     writeFileSync(testConfigFile, JSON.stringify(testConfig, null, 2))
   })
 
   afterEach(() => {
-    // Restore original config
-    if (originalConfig !== null) {
-      writeFileSync(testConfigFile, originalConfig)
+    // Clean up test directory
+    if (existsSync(testConfigDir)) {
+      rmSync(testConfigDir, { recursive: true, force: true })
     }
   })
 

@@ -5,4 +5,7 @@ export default defineConfig({
   define: {
     __VERSION__: JSON.stringify(pkg.version),
   },
+  test: {
+    setupFiles: ['./tests/setup.ts'],
+  },
 })

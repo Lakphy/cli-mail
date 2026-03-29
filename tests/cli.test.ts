@@ -17,6 +17,12 @@ describe('CLI', () => {
     expect(program.version()).toBe(pkg.version)
   })
 
+  test('has --config option for custom config file path', () => {
+    const program = createCli()
+    const optionFlags = program.options.map((o) => o.long)
+    expect(optionFlags).toContain('--config')
+  })
+
   test('has all top-level commands', () => {
     const program = createCli()
     const names = program.commands.map((c) => c.name())

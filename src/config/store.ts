@@ -1,14 +1,34 @@
 // Config file management (~/.cli-mail/)
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import type { AccountConfig, AppConfig } from './types.js'
 import { DEFAULT_CONFIG } from './types.js'
 import { ConfigError } from '../utils/error.js'
 
-const CONFIG_DIR = join(homedir(), '.cli-mail')
-const CONFIG_FILE = join(CONFIG_DIR, 'accounts.json')
+const DEFAULT_CONFIG_DIR = join(homedir(), '.cli-mail')
+const DEFAULT_CONFIG_FILE = join(DEFAULT_CONFIG_DIR, 'accounts.json')
+
+let CONFIG_DIR = DEFAULT_CONFIG_DIR
+let CONFIG_FILE = DEFAULT_CONFIG_FILE
+
+/** Set a custom config file path (also updates CONFIG_DIR to its parent) */
+export function setConfigPath(filePath: string): void {
+  CONFIG_FILE = filePath
+  CONFIG_DIR = dirname(filePath)
+}
+
+/** Get the current config file path */
+export function getConfigPath(): string {
+  return CONFIG_FILE
+}
+
+/** Reset config path to default (~/.cli-mail/accounts.json) */
+export function resetConfigPath(): void {
+  CONFIG_DIR = DEFAULT_CONFIG_DIR
+  CONFIG_FILE = DEFAULT_CONFIG_FILE
+}
 
 function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {

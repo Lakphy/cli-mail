@@ -2,6 +2,7 @@
 
 import { Command } from 'commander'
 import { setGlobalFormat, type OutputFormat } from './output/formatter.js'
+import { setConfigPath } from './config/store.js'
 
 // Module-level global account alias, set by the preAction hook
 let _globalAccountAlias: string | undefined
@@ -39,8 +40,12 @@ export function createCli(): Command {
     .version(__VERSION__)
     .option('-f, --format <format>', 'Output format: markdown (default) or json', 'markdown')
     .option('-a, --account <alias>', 'Account alias to use')
+    .option('-c, --config <path>', 'Path to config file (default: ~/.cli-mail/accounts.json)')
     .hook('preAction', (thisCommand) => {
       const opts = thisCommand.opts()
+      if (opts.config) {
+        setConfigPath(opts.config)
+      }
       if (opts.format) {
         // Accept 'text' as alias for 'markdown' for backward compatibility
         const fmt = opts.format === 'text' ? 'markdown' : opts.format
