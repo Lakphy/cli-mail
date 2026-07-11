@@ -2,6 +2,8 @@
 
 import type { HttpClient } from '../../utils/http.js'
 import type { MailboxSettings } from '../types.js'
+import { z } from 'zod'
+import { ConfigError } from '../../utils/error.js'
 
 interface GraphMailboxSettings {
   automaticRepliesSetting?: {
@@ -39,6 +41,14 @@ interface GraphMailTips {
   totalMemberCount?: number
 }
 
+const outlookAutoReplySchema = z.object({
+  enabled: z.boolean(),
+  internalMessage: z.string().optional(),
+  externalMessage: z.string().optional(),
+  startDateTime: z.string().optional(),
+  endDateTime: z.string().optional(),
+}).strict()
+
 export async function getSettings(client: HttpClient): Promise<MailboxSettings> {
   const settings = await client.get<GraphMailboxSettings>('/mailboxSettings')
   return normalizeSettings(settings)
@@ -74,27 +84,50 @@ export async function getAutoReply(client: HttpClient): Promise<MailboxSettings[
 
 export async function setAutoReply(
   client: HttpClient,
-  options: {
-    enabled: boolean
-    internalMessage?: string
-    externalMessage?: string
-    startDateTime?: string
-    endDateTime?: string
-  },
+  input: unknown,
 ): Promise<void> {
+  const parsed = outlookAutoReplySchema.safeParse(input)
+  if (!parsed.success) {
+    throw new ConfigError('Invalid Outlook auto-reply settings', {
+      issues: parsed.error.issues,
+    })
+  }
+  const options = parsed.data
+  const hasStart = options.startDateTime !== undefined
+  const hasEnd = options.endDateTime !== undefined
+  if (hasStart !== hasEnd) {
+    throw new TypeError('Scheduled automatic replies require both startDateTime and endDateTime')
+  }
+
+  let start: NormalizedUtcDateTime | undefined
+  let end: NormalizedUtcDateTime | undefined
+  if (hasStart && hasEnd) {
+    start = normalizeUtcDateTime(options.startDateTime as string)
+    end = normalizeUtcDateTime(options.endDateTime as string)
+    if (start.epochMs >= end.epochMs) {
+      throw new TypeError('Automatic reply endDateTime must be later than startDateTime')
+    }
+  }
+
+  const status = !options.enabled
+    ? 'disabled'
+    : hasStart
+      ? 'scheduled'
+      : 'alwaysEnabled'
+
   const settings: Record<string, unknown> = {
     automaticRepliesSetting: {
-      status: options.enabled ? 'scheduled' : 'disabled',
-      internalReplyMessage: options.internalMessage || '',
-      externalReplyMessage: options.externalMessage || '',
-      ...(options.startDateTime && options.endDateTime
+      status,
+      internalReplyMessage: options.internalMessage ?? '',
+      externalReplyMessage: options.externalMessage ?? '',
+      ...(status === 'scheduled' && start && end
         ? {
             scheduledStartDateTime: {
-              dateTime: options.startDateTime,
+              dateTime: start.graphDateTime,
               timeZone: 'UTC',
             },
             scheduledEndDateTime: {
-              dateTime: options.endDateTime,
+              dateTime: end.graphDateTime,
               timeZone: 'UTC',
             },
           }
@@ -103,6 +136,30 @@ export async function setAutoReply(
   }
 
   await client.patch('/mailboxSettings', settings)
+}
+
+interface NormalizedUtcDateTime {
+  epochMs: number
+  graphDateTime: string
+}
+
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?$/i
+
+/** Convert offset-bearing input to a timezone-free UTC value paired with UTC. */
+function normalizeUtcDateTime(value: string): NormalizedUtcDateTime {
+  if (!ISO_DATE_TIME.test(value)) {
+    throw new TypeError('Automatic reply start and end must be valid ISO date-time values')
+  }
+  const hasOffset = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+  const epochMs = Date.parse(hasOffset ? value : `${value}Z`)
+  if (!Number.isFinite(epochMs)) {
+    throw new TypeError('Automatic reply start and end must be valid ISO date-time values')
+  }
+  return {
+    epochMs,
+    // dateTimeTimeZone carries the timezone separately, so don't append Z.
+    graphDateTime: new Date(epochMs).toISOString().slice(0, -1),
+  }
 }
 
 export async function getMailTips(
@@ -152,7 +209,7 @@ export async function deleteFocusedInboxOverride(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/inferenceClassification/overrides/${id}`)
+  await client.delete(`/inferenceClassification/overrides/${encodeURIComponent(id)}`)
 }
 
 // --- Helpers ---

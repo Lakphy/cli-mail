@@ -1,12 +1,12 @@
-// Standardized error types for CLI mail
-
-import { getGlobalFormat } from '../output/formatter.js'
+import { outputFailure, type ErrorPayload } from '../output/formatter.js'
+import { redactSensitive, redactText } from './redact.js'
 
 export class CliMailError extends Error {
   constructor(
     message: string,
     public code: string,
     public statusCode?: number,
+    public details?: unknown,
   ) {
     super(message)
     this.name = 'CliMailError'
@@ -14,8 +14,8 @@ export class CliMailError extends Error {
 }
 
 export class AuthError extends CliMailError {
-  constructor(message: string) {
-    super(message, 'AUTH_ERROR', 401)
+  constructor(message: string, details?: unknown) {
+    super(message, 'AUTH_ERROR', 401, details)
     this.name = 'AuthError'
   }
 }
@@ -32,166 +32,118 @@ export class ApiError extends CliMailError {
     message: string,
     statusCode: number,
     public response?: unknown,
+    public suggestion?: string,
   ) {
-    super(message, 'API_ERROR', statusCode)
+    super(message, 'API_ERROR', statusCode, response)
     this.name = 'ApiError'
   }
 }
 
 export class RateLimitError extends ApiError {
-  constructor(
-    public retryAfterMs: number,
-    response?: unknown,
-  ) {
+  constructor(public retryAfterMs: number, response?: unknown) {
     super('Rate limit exceeded', 429, response)
     this.name = 'RateLimitError'
+    this.code = 'RATE_LIMIT_ERROR'
   }
 }
 
 export class ConfigError extends CliMailError {
-  constructor(message: string) {
-    super(message, 'CONFIG_ERROR')
+  constructor(message: string, details?: unknown) {
+    super(message, 'CONFIG_ERROR', undefined, details)
     this.name = 'ConfigError'
   }
 }
 
+export class AccountReauthRequiredError extends ConfigError {
+  constructor(alias: string) {
+    super(`Account "${alias}" must be reauthenticated`, { alias })
+    this.name = 'AccountReauthRequiredError'
+    this.code = 'ACCOUNT_REAUTH_REQUIRED'
+  }
+}
+
 export class ProviderError extends CliMailError {
-  constructor(message: string, public provider: string) {
-    super(message, 'PROVIDER_ERROR')
+  constructor(message: string, public provider: string, details?: unknown) {
+    super(message, 'PROVIDER_ERROR', undefined, details)
     this.name = 'ProviderError'
   }
 }
 
-/**
- * Generate an actionable suggestion based on the error type and message.
- */
-function getSuggestion(error: unknown): string | undefined {
+/** Sentinel used to prevent duplicate formatting at the process boundary. */
+export class HandledCliError extends Error {
+  constructor(public exitCode: 1 | 2 = 1) {
+    super('CLI error already handled')
+    this.name = 'HandledCliError'
+  }
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function getSuggestion(error: unknown): string | undefined {
   if (error instanceof TokenExpiredError || error instanceof AuthError) {
-    return 'Re-authenticate with: cli-mail account add <provider>'
+    return 'Re-authenticate with: cli-mail account reauth [alias]'
   }
-
   if (error instanceof RateLimitError) {
-    const seconds = Math.ceil(error.retryAfterMs / 1000)
-    return `Rate limited. Retry after ${seconds} seconds.`
+    return `Rate limited. Retry after ${Math.ceil(error.retryAfterMs / 1000)} seconds.`
   }
-
   if (error instanceof ApiError) {
-    const msg = error.message?.toLowerCase() || ''
-    const responseStr = JSON.stringify(error.response || '').toLowerCase()
-
-    // $orderBy + $search conflict
-    if (msg.includes('$orderby') || msg.includes('orderby') || responseStr.includes('orderbywithsearch')) {
-      return 'Search does not support sorting. Use "cli-mail msg list" with --query instead, or upgrade to the latest version where this is fixed.'
+    if (error.suggestion) return error.suggestion
+    const message = error.message.toLowerCase()
+    const response = JSON.stringify(error.response ?? '').toLowerCase()
+    if (error.statusCode === 403 && (message.includes('access_denied') || response.includes('access_denied'))) {
+      return 'Verify the OAuth app consent configuration and that this account is allowed to use it.'
     }
-
-    // OAuth 403 — test user not added
-    if (error.statusCode === 403 && (msg.includes('access_denied') || msg.includes('not configured') || responseStr.includes('access_denied'))) {
-      return 'OAuth app may be in testing mode. Go to Google Cloud Console → OAuth consent screen → Test users, and add your email address.'
+    if (error.statusCode === 503 || message.includes('transient') || message.includes('temporarily unavailable')) {
+      return 'The provider is temporarily unavailable. Retry in a few seconds.'
     }
-
-    // 503 transient server error
-    if (error.statusCode === 503 || msg.includes('transient') || msg.includes('temporarily unavailable')) {
-      return 'Server temporarily unavailable. Retry in a few seconds.'
-    }
-
-    // 404 — resource not found
-    if (error.statusCode === 404) {
-      return 'Resource not found. The message, folder, or account may have been deleted or the ID is invalid.'
-    }
-
-    // 400 — bad request
-    if (error.statusCode === 400) {
-      return 'Bad request. Check the command parameters and try again.'
-    }
+    if (error.statusCode === 404) return 'The resource may have been deleted or its ID is invalid.'
+    if (error.statusCode === 400) return 'Check the command parameters and try again.'
   }
-
+  if (error instanceof CliMailError && error.code === 'ACCOUNT_REAUTH_REQUIRED') {
+    return 'Re-authenticate with: cli-mail account reauth [alias]'
+  }
   if (error instanceof ConfigError) {
-    const msg = error.message || ''
-    if (msg.includes('not found')) {
-      return 'Run "cli-mail account list" to see available accounts.'
-    }
-    if (msg.includes('No default account')) {
-      return 'Add an account first: cli-mail account add gmail (or outlook)'
-    }
+    if (error.message.includes('not found')) return 'Run "cli-mail account list" to see available accounts.'
+    if (error.message.includes('No default account')) return 'Add an account first: cli-mail account add gmail|outlook'
   }
-
   return undefined
 }
 
-/**
- * Format error output as JSON (used in JSON mode and as fallback).
- */
-export function formatErrorOutput(error: unknown): string {
+export function toErrorPayload(error: unknown): ErrorPayload {
   const suggestion = getSuggestion(error)
-
   if (error instanceof CliMailError) {
-    return JSON.stringify(
-      {
-        error: error.message,
-        code: error.code,
-        ...(error.statusCode ? { statusCode: error.statusCode } : {}),
-        ...(error instanceof ApiError && error.response
-          ? { details: error.response }
-          : {}),
-        ...(suggestion ? { suggestion } : {}),
-      },
-      null,
-      2,
-    )
+    return {
+      code: error.code,
+      message: redactText(error.message),
+      ...(error.statusCode !== undefined ? { statusCode: error.statusCode } : {}),
+      ...(error.details !== undefined ? { details: redactSensitive(error.details) } : {}),
+      ...(suggestion ? { suggestion: redactText(suggestion) } : {}),
+    }
   }
-
   if (error instanceof Error) {
-    return JSON.stringify({
-      error: error.message,
+    return {
       code: 'UNKNOWN_ERROR',
-      ...(suggestion ? { suggestion } : {}),
-    }, null, 2)
+      message: redactText(error.message),
+      ...(suggestion ? { suggestion: redactText(suggestion) } : {}),
+    }
   }
-
-  return JSON.stringify({
-    error: String(error),
+  return {
     code: 'UNKNOWN_ERROR',
-    ...(suggestion ? { suggestion } : {}),
-  }, null, 2)
+    message: redactText(String(error)),
+    ...(suggestion ? { suggestion: redactText(suggestion) } : {}),
+  }
 }
 
-/**
- * Format error output as Markdown (used in markdown mode).
- */
-function formatErrorMarkdown(error: unknown): string {
-  const suggestion = getSuggestion(error)
-  const lines: string[] = []
-
-  if (error instanceof CliMailError) {
-    lines.push(`> ❌ **Error**: ${error.message}`)
-    lines.push(`> **Code**: ${error.code}`)
-    if (error.statusCode) {
-      lines.push(`> **Status**: ${error.statusCode}`)
-    }
-    if (error instanceof ApiError && error.response) {
-      lines.push(`> **Details**: ${JSON.stringify(error.response)}`)
-    }
-  } else if (error instanceof Error) {
-    lines.push(`> ❌ **Error**: ${error.message}`)
-    lines.push(`> **Code**: UNKNOWN_ERROR`)
-  } else {
-    lines.push(`> ❌ **Error**: ${String(error)}`)
-    lines.push(`> **Code**: UNKNOWN_ERROR`)
-  }
-
-  if (suggestion) {
-    lines.push(`> 💡 **Suggestion**: ${suggestion}`)
-  }
-
-  return lines.join('\n')
+/** Kept as a pure formatter for library callers and tests. */
+export function formatErrorOutput(error: unknown): string {
+  return JSON.stringify({ ok: false, error: toErrorPayload(error) }, null, 2)
 }
 
 export function handleError(error: unknown): never {
-  const fmt = getGlobalFormat()
-  if (fmt === 'json') {
-    process.stderr.write(formatErrorOutput(error) + '\n')
-  } else {
-    process.stderr.write(formatErrorMarkdown(error) + '\n')
-  }
-  process.exit(1)
+  if (error instanceof HandledCliError) throw error
+  outputFailure(toErrorPayload(error))
+  process.exitCode = 1
+  throw new HandledCliError(1)
 }

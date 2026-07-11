@@ -1,8 +1,19 @@
 // Gmail thread operations
 
 import type { HttpClient } from '../../utils/http.js'
-import type { MessageSummary, EmailAddress } from '../types.js'
-import { getHeader, type GmailPayload } from '../../utils/mime.js'
+import type { MessageSummary } from '../types.js'
+import {
+  getHeader,
+  type GmailPayload,
+} from '../../utils/mime.js'
+import {
+  normalizeMessageSummary,
+  settledMapWithConcurrency,
+  settledValuesAndErrors,
+  type GmailItemError,
+} from './helpers.js'
+
+const DETAIL_CONCURRENCY = 8
 
 interface GmailThread {
   id: string
@@ -39,15 +50,29 @@ export interface ThreadDetail {
   messages: MessageSummary[]
 }
 
+export interface ThreadListOptions {
+  query?: string
+  top?: number
+  labelIds?: string
+  pageToken?: string
+}
+
+export interface ThreadListResult {
+  threads: ThreadSummary[]
+  nextPageToken?: string
+  errors?: GmailItemError[]
+}
+
 export async function listThreads(
   client: HttpClient,
-  options: { query?: string; top?: number; labelIds?: string } = {},
-): Promise<{ threads: ThreadSummary[]; nextPageToken?: string }> {
-  const query: Record<string, string | number | boolean | undefined> = {
-    maxResults: options.top || 20,
+  options: ThreadListOptions = {},
+): Promise<ThreadListResult> {
+  const query: Record<string, string | number | boolean | string[] | undefined> = {
+    maxResults: options.top ?? 20,
   }
   if (options.query) query.q = options.query
   if (options.labelIds) query.labelIds = options.labelIds
+  if (options.pageToken) query.pageToken = options.pageToken
 
   const list = await client.get<GmailThreadList>('/threads', query)
 
@@ -56,13 +81,23 @@ export async function listThreads(
   }
 
   // Fetch each thread metadata
-  const threads = await Promise.all(
-    list.threads.map((t) => client.get<GmailThread>(`/threads/${t.id}`, { format: 'metadata', metadataHeaders: 'Subject,Date' })),
+  const settled = await settledMapWithConcurrency(
+    list.threads,
+    DETAIL_CONCURRENCY,
+    (thread) => client.get<GmailThread>(`/threads/${thread.id}`, {
+      format: 'metadata',
+      metadataHeaders: ['Subject', 'Date'],
+    }),
+  )
+  const { values, errors } = settledValuesAndErrors(
+    list.threads.map((thread) => thread.id),
+    settled,
   )
 
   return {
-    threads: threads.map(normalizeThreadSummary),
+    threads: values.map(normalizeThreadSummary),
     nextPageToken: list.nextPageToken,
+    ...(errors.length > 0 ? { errors } : {}),
   }
 }
 
@@ -73,7 +108,7 @@ export async function getThread(
   const thread = await client.get<GmailThread>(`/threads/${id}`, { format: 'full' })
   return {
     id: thread.id,
-    messages: (thread.messages || []).map(normalizeThreadMessage),
+    messages: (thread.messages || []).map(normalizeMessageSummary),
   }
 }
 
@@ -110,21 +145,6 @@ export async function deleteThread(
   await client.delete(`/threads/${id}`)
 }
 
-// --- Helpers ---
-
-function parseEmailAddress(raw: string): EmailAddress {
-  const match = raw.match(/^(.+?)\s*<(.+?)>$/)
-  if (match) {
-    return { name: match[1].trim().replace(/^"|"$/g, ''), address: match[2] }
-  }
-  return { address: raw.trim() }
-}
-
-function parseEmailAddresses(raw: string): EmailAddress[] {
-  if (!raw) return []
-  return raw.split(',').map((addr) => parseEmailAddress(addr.trim()))
-}
-
 function normalizeThreadSummary(thread: GmailThread): ThreadSummary {
   const messages = thread.messages || []
   const lastMsg = messages[messages.length - 1]
@@ -136,20 +156,5 @@ function normalizeThreadSummary(thread: GmailThread): ThreadSummary {
     messageCount: messages.length,
     subject: getHeader(headers, 'Subject') || '(no subject)',
     lastDate: getHeader(headers, 'Date') || '',
-  }
-}
-
-function normalizeThreadMessage(msg: GmailThreadMessage): MessageSummary {
-  const headers = msg.payload?.headers || []
-  return {
-    id: msg.id,
-    subject: getHeader(headers, 'Subject') || '(no subject)',
-    from: parseEmailAddress(getHeader(headers, 'From')),
-    to: parseEmailAddresses(getHeader(headers, 'To')),
-    date: getHeader(headers, 'Date') || new Date(parseInt(msg.internalDate || '0')).toISOString(),
-    snippet: msg.snippet,
-    isRead: !(msg.labelIds || []).includes('UNREAD'),
-    hasAttachments: false,
-    labels: msg.labelIds,
   }
 }

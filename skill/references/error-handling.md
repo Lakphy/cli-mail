@@ -1,165 +1,74 @@
-# Error Handling Guide
+# Error handling
 
-## Common Errors and Solutions
+Run automation commands with `--format json`. JSON is written to stdout as exactly one document.
 
-### Authentication Errors
+## Exit codes
 
-**Error**: `Authentication failed` or `Invalid credentials`
+- `0`: success; consume `.data` and `.meta`.
+- `1`: failure; inspect `.error`.
+- `2`: partial success; consume `.data` and report `.errors`.
 
-**Causes**:
-- OAuth tokens expired
-- Invalid Client ID/Secret
-- Account was removed from cloud console
-
-**Solutions**:
-1. Check if account still exists: `cli-mail account list`
-2. Remove and re-add account:
-   ```bash
-   cli-mail account remove <alias>
-   cli-mail account add <provider> --alias <alias>
-   ```
-3. Verify Client ID/Secret are correct
-4. Check OAuth app is still active in cloud console
-
----
-
-**Error**: `Account not found: <alias>`
-
-**Causes**:
-- Typo in account alias
-- Account was never added
-- Account was removed
-
-**Solutions**:
-1. List available accounts: `cli-mail account list`
-2. Use correct alias or add account if missing
-3. Check if default account is set: `cli-mail account info`
-
----
-
-### Permission Errors
-
-**Error**: `Insufficient permissions` or `Access denied`
-
-**Causes**:
-- Missing API permissions in cloud console
-- User denied permissions during OAuth
-
-**Solutions**:
-1. **Gmail**: Check Gmail API is enabled in Google Cloud Console
-2. **Outlook**: Verify these permissions in Azure Portal:
-   - `Mail.ReadWrite`
-   - `Mail.Send`
-   - `MailboxSettings.ReadWrite`
-   - `User.Read`
-3. Re-authenticate: Remove and re-add account
-
----
-
-### Network Errors
-
-**Error**: `Network request failed` or `Connection timeout`
-
-**Causes**:
-- No internet connection
-- Firewall blocking requests
-- API service temporarily down
-
-**Solutions**:
-1. Check internet connection
-2. Verify firewall allows outbound HTTPS
-3. Try again after a few minutes
-4. Check provider status pages
-
----
-
-### Message Not Found
-
-**Error**: `Message not found` or `Invalid message ID`
-
-**Causes**:
-- Message was deleted
-- Wrong message ID
-- Message in different account
-
-**Solutions**:
-1. Verify message ID is correct
-2. Check if using correct account: `--account <alias>`
-3. Search for message: `cli-mail msg search --query "..."`
-
----
-
-### Attachment Errors
-
-**Error**: `Attachment not found` or `Failed to download attachment`
-
-**Causes**:
-- Invalid attachment ID
-- Attachment was removed
-- Insufficient disk space
-
-**Solutions**:
-1. List attachments first: `cli-mail att list <message-id>`
-2. Verify attachment ID is correct
-3. Check disk space: `df -h`
-4. Try different output path
-
----
-
-### Rate Limiting
-
-**Error**: `Rate limit exceeded` or `Too many requests`
-
-**Causes**:
-- Too many API calls in short time
-- Gmail: 250 quota units per user per second
-- Outlook: Varies by operation
-
-**Solutions**:
-1. Wait a few seconds and retry
-2. Reduce batch operation size
-3. Add delays between operations
-4. For bulk operations, process in smaller chunks
-
----
-
-## Error Response Format
-
-Errors are output as JSON to stderr:
+Failure example:
 
 ```json
 {
-  "error": "Error message here",
-  "code": "ERROR_CODE"
+  "ok": false,
+  "error": {
+    "code": "AUTH_ERROR",
+    "message": "...",
+    "statusCode": 401,
+    "suggestion": "Re-authenticate with: cli-mail account reauth [alias]"
+  }
 }
 ```
 
-**Common error codes**:
-- `CONFIG_ERROR` - Configuration issue
-- `AUTH_ERROR` - Authentication failed
-- `PROVIDER_ERROR` - API error from Gmail/Outlook
-- `NETWORK_ERROR` - Network/connection issue
-- `NOT_FOUND` - Resource not found
+## Common codes
 
----
+### `CONFIG_ERROR`
 
-## Troubleshooting Workflow
+- List accounts with `cli-mail account list`.
+- Inspect the selected account with `cli-mail account info <alias>`.
+- Correct invalid JSON, tags, page tokens, or missing confirmation flags.
 
-When a command fails:
+### `ACCOUNT_REAUTH_REQUIRED` in a config message or `AUTH_ERROR`
 
-1. **Check account**: `cli-mail account list` - Does account exist?
-2. **Check account info**: `cli-mail account info <alias>` - Is it configured correctly?
-3. **Test simple command**: `cli-mail profile --account <alias>` - Can we connect?
-4. **Check error message**: Look for specific error code
-5. **Re-authenticate if needed**: Remove and re-add account
-6. **Verify permissions**: Check cloud console settings
+Do not remove migrated account metadata. Reauthorize the existing alias:
 
----
+```bash
+cli-mail account reauth <gmail-alias> --credentials-file <desktop-json>
+cli-mail account reauth <outlook-alias> --client-id <public-client-id>
+```
 
-## Tips for AI Assistants
+### `CAPABILITY_REQUIRED`
 
-1. **Parse error messages**: Extract error code and message from JSON stderr
-2. **Suggest specific solutions**: Based on error code, provide targeted fix
-3. **Guide step-by-step**: Don't just say "re-authenticate", show the exact commands
-4. **Verify before retry**: After fixing, test with simple command first
-5. **Explain why**: Help user understand what went wrong and how to prevent it
+For Gmail permanent deletion, explain the scope expansion and obtain user approval before running:
+
+```bash
+cli-mail account reauth <alias> --credentials-file <desktop-json> --full-access
+```
+
+Do not request full access for ordinary reading, sending, trashing, or settings-basic operations.
+
+### `CLI_USAGE_ERROR`
+
+Correct the command, enum, integer, or required option. Use `cli-mail <command> --help`; do not retry unchanged.
+
+### `COMMAND_REMOVED`
+
+Do not bypass it. Delegate and Gmail sharing writes are outside the user OAuth model. Direct the user to Gmail or Google Workspace administration.
+
+### `API_ERROR` / `RATE_LIMIT_ERROR`
+
+Use `statusCode`, `details`, and `suggestion`. Safe GETs already receive bounded retries. Avoid automatically repeating writes because their outcome may be ambiguous.
+
+### `REQUEST_TIMEOUT`
+
+Check connectivity and provider status, then retry a read. Ask before retrying an irreversible action.
+
+## Partial errors
+
+For exit 2, correlate each `.errors[].item` with the requested message/account. Keep and present successful `.data`; retry only failed reads or explicitly approved writes.
+
+## Sensitive details
+
+Do not ask users to paste tokens or client credential JSON content. Request only a local credentials-file path or public client ID. cli-mail redacts common secret fields, but still avoid relaying provider error details unnecessarily.

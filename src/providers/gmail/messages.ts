@@ -11,14 +11,37 @@ import type {
 import {
   buildMimeMessage,
   toBase64Url,
-  extractTextFromPayload,
+  base64UrlToBuffer,
+  extractBodyFromPayload,
+  formatEmailAddress,
   getHeader,
+  parseEmailAddresses,
+  parseMimeMessage,
+  parsedAddressObjectToList,
   type GmailPayload,
 } from '../../utils/mime.js'
-import { readFileSync } from 'node:fs'
-import { basename } from 'node:path'
+import { CliMailError, ConfigError } from '../../utils/error.js'
+import {
+  extractGmailAttachments,
+  headersToRecord,
+  normalizeMessageSummary,
+  settledMapWithConcurrency,
+  settledValuesAndErrors,
+  toMimeAttachments,
+  type GmailItemError,
+} from './helpers.js'
 
-// --- Gmail API response types ---
+const DETAIL_CONCURRENCY = 8
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+export const attachmentLimits = {
+  maxFileBytes: MAX_ATTACHMENT_BYTES,
+  assertTotalSize(totalBytes: number): void {
+    if (totalBytes > MAX_ATTACHMENT_BYTES) {
+      throw new ConfigError('Gmail attachments exceed the combined 25 MiB limit')
+    }
+  },
+}
 
 interface GmailMessage {
   id: string
@@ -38,94 +61,112 @@ interface GmailMessageList {
   resultSizeEstimate?: number
 }
 
-// --- Operations ---
+export interface GmailMessageListResult {
+  messages: MessageSummary[]
+  nextPageToken?: string
+  /** Per-message failures; successful items are still returned. */
+  errors?: GmailItemError[]
+}
+
+export interface GmailReplyIdentity {
+  email: string
+  aliases?: string[]
+}
 
 export async function listMessages(
   client: HttpClient,
   options: ListOptions = {},
-): Promise<{ messages: MessageSummary[]; nextPageToken?: string }> {
-  const query: Record<string, string | number | boolean | undefined> = {
-    maxResults: options.top || 20,
+): Promise<GmailMessageListResult> {
+  const query: Record<string, string | number | boolean | string[] | undefined> = {
+    maxResults: options.top ?? 20,
+    q: options.query,
+    labelIds: options.folder,
+    pageToken: options.pageToken,
   }
-
-  if (options.query) {
-    query.q = options.query
-  }
-  if (options.folder) {
-    query.labelIds = options.folder
-  }
-  if (options.skip) {
-    // Gmail uses pageToken, not skip. We'll just note this.
-    // For simplicity, we ignore skip for Gmail.
-  }
-  if (options.pageToken) {
-    query.pageToken = options.pageToken
-  }
-
   const list = await client.get<GmailMessageList>('/messages', query)
+  const listed = list.messages ?? []
 
-  if (!list.messages || list.messages.length === 0) {
+  if (listed.length === 0) {
     return { messages: [], nextPageToken: list.nextPageToken }
   }
 
-  // Fetch each message's metadata
-  const messages = await Promise.all(
-    list.messages.map((m) =>
-      client.get<GmailMessage>(`/messages/${m.id}`, {
-        format: 'metadata',
-        metadataHeaders: ['From', 'To', 'Subject', 'Date'],
-      }),
-    ),
+  // format=metadata does not include MIME parts, so it cannot determine
+  // whether a message has attachments. A narrowed full response provides both
+  // headers and the part tree without fetching attachment contents.
+  const settled = await settledMapWithConcurrency(
+    listed,
+    DETAIL_CONCURRENCY,
+    (message) => client.get<GmailMessage>(`/messages/${message.id}`, {
+      format: 'full',
+      fields: 'id,threadId,labelIds,snippet,internalDate,payload',
+    }),
+  )
+  const { values, errors } = settledValuesAndErrors(
+    listed.map((message) => message.id),
+    settled,
   )
 
   return {
-    messages: messages.map(normalizeMessageSummary),
+    messages: values.map(normalizeMessageSummary),
     nextPageToken: list.nextPageToken,
+    ...(errors.length > 0 ? { errors } : {}),
   }
+}
+
+export function listMessagesSince(
+  client: HttpClient,
+  sinceDate: Date,
+  top: number,
+  pageToken?: string,
+): Promise<GmailMessageListResult> {
+  return listMessages(client, {
+    query: `after:${Math.floor(sinceDate.getTime() / 1000)}`,
+    top,
+    pageToken,
+  })
 }
 
 export async function getMessage(
   client: HttpClient,
   id: string,
 ): Promise<MessageDetail> {
-  const msg = await client.get<GmailMessage>(`/messages/${id}`, { format: 'full' })
-  return normalizeMessageDetail(msg)
+  const message = await client.get<GmailMessage>(`/messages/${id}`, { format: 'full' })
+  return normalizeMessageDetail(message)
 }
 
+/** Return the exact decoded RFC 5322 bytes supplied by Gmail. */
 export async function getMessageRaw(
   client: HttpClient,
   id: string,
-): Promise<string> {
-  const msg = await client.get<GmailMessage>(`/messages/${id}`, { format: 'raw' })
-  if (msg.raw) {
-    return Buffer.from(msg.raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8')
-  }
-  return ''
+): Promise<Buffer> {
+  const message = await client.get<GmailMessage>(`/messages/${id}`, { format: 'raw' })
+  return message.raw ? base64UrlToBuffer(message.raw) : Buffer.alloc(0)
 }
 
 export async function sendMessage(
   client: HttpClient,
   options: SendMessageOptions,
 ): Promise<{ id: string; threadId: string }> {
-  // Build MIME message
-  let mime: string
+  const mime = await buildMimeMessage({
+    to: options.to,
+    cc: options.cc,
+    bcc: options.bcc,
+    subject: options.subject,
+    body: options.body,
+    contentType: options.bodyType === 'html' ? 'text/html' : 'text/plain',
+    attachments: options.attachments?.map((attachment) => ({
+      filename: attachment.name || undefined,
+      path: attachment.path,
+      contentDisposition: 'attachment',
+    })),
+    headers: options.importance && options.importance !== 'normal'
+      ? { Importance: options.importance }
+      : undefined,
+  })
 
-  if (options.attachments && options.attachments.length > 0) {
-    mime = buildMimeWithAttachments(options)
-  } else {
-    mime = buildMimeMessage({
-      to: options.to,
-      cc: options.cc,
-      bcc: options.bcc,
-      subject: options.subject,
-      body: options.body,
-      contentType: options.bodyType === 'html' ? 'text/html' : 'text/plain',
-    })
-  }
-
-  const raw = toBase64Url(mime)
-
-  const result = await client.post<GmailMessage>('/messages/send', { raw })
+  const result = await client.post<GmailMessage>('/messages/send', {
+    raw: toBase64Url(mime),
+  })
   return { id: result.id, threadId: result.threadId }
 }
 
@@ -134,30 +175,49 @@ export async function replyToMessage(
   messageId: string,
   body: string,
   replyAll = false,
+  identity?: GmailReplyIdentity,
+  prefetchedMessage?: MessageDetail,
 ): Promise<{ id: string; threadId: string }> {
-  // Get original message to extract headers
-  const original = await getMessage(client, messageId)
+  const original = prefetchedMessage ?? await getMessage(client, messageId)
+  const selfAddresses = collectSelfAddresses(original, identity)
+  const sender = original.from
 
-  const to = replyAll
-    ? [original.from, ...(original.to || []), ...(original.cc || [])].map((a) => a.address)
-    : [original.from.address]
+  const toCandidates = replyAll
+    ? [sender, ...original.to]
+    : [sender]
+  const usedAddresses = new Set(selfAddresses)
+  const to = dedupeAddresses(toCandidates, usedAddresses)
+  const cc = replyAll
+    ? dedupeAddresses(original.cc ?? [], usedAddresses)
+    : []
 
-  const subject = original.subject.startsWith('Re:')
+  if (to.length === 0 && cc.length === 0) {
+    throw new CliMailError(
+      'No reply recipients remain after excluding the current account.',
+      'INVALID_REPLY_RECIPIENTS',
+    )
+  }
+
+  const subject = /^re:/i.test(original.subject)
     ? original.subject
     : `Re: ${original.subject}`
+  const messageIdHeader = original.internetMessageId
+  const references = mergeReferences(
+    findRecordHeader(original.headers, 'References'),
+    messageIdHeader,
+  )
 
-  const mime = buildMimeMessage({
+  const mime = await buildMimeMessage({
     to,
+    cc,
     subject,
     body,
-    inReplyTo: original.internetMessageId,
-    references: original.internetMessageId,
+    inReplyTo: messageIdHeader,
+    references,
   })
 
-  const raw = toBase64Url(mime)
-
   const result = await client.post<GmailMessage>('/messages/send', {
-    raw,
+    raw: toBase64Url(mime),
     threadId: original.threadId,
   })
   return { id: result.id, threadId: result.threadId }
@@ -169,25 +229,53 @@ export async function forwardMessage(
   to: string[],
   body?: string,
 ): Promise<{ id: string; threadId: string }> {
-  const original = await getMessage(client, messageId)
   const rawOriginal = await getMessageRaw(client, messageId)
+  const original = await parseMimeMessage(rawOriginal)
+  const forwardedHeaderLines = [
+    '---------- Forwarded message ----------',
+    original.from?.text ? `From: ${original.from.text}` : undefined,
+    original.date ? `Date: ${original.date.toUTCString()}` : undefined,
+    original.subject !== undefined ? `Subject: ${original.subject}` : undefined,
+    original.to
+      ? `To: ${parsedAddressObjectToList(original.to).map(formatEmailAddress).join(', ')}`
+      : undefined,
+    original.cc
+      ? `Cc: ${parsedAddressObjectToList(original.cc).map(formatEmailAddress).join(', ')}`
+      : undefined,
+  ].filter((line): line is string => line !== undefined)
+  const forwardedHeader = forwardedHeaderLines.join('\n')
 
-  const forwardBody = body
-    ? `${body}\n\n---------- Forwarded message ----------\n${rawOriginal}`
-    : `---------- Forwarded message ----------\n${rawOriginal}`
+  // Deliberately reconstruct rather than embedding the raw headers: Bcc and
+  // provider-internal routing/authentication headers must not be forwarded.
+  const forwardBody = [body, forwardedHeader, '', original.text ?? '']
+    .filter((part) => part !== undefined)
+    .join('\n')
+  const forwardHtml = typeof original.html === 'string'
+    ? [
+        body ? `<p>${escapeHtml(body).replace(/\n/g, '<br>')}</p>` : undefined,
+        '<hr>',
+        `<div>${forwardedHeaderLines.map(escapeHtml).join('<br>')}</div>`,
+        '<br>',
+        original.html,
+      ].filter((part): part is string => part !== undefined).join('\n')
+    : undefined
+  const subject = /^fwd:/i.test(original.subject ?? '')
+    ? original.subject ?? ''
+    : `Fwd: ${original.subject ?? ''}`
+  const attachments = toMimeAttachments(original.attachments)
 
-  const subject = original.subject.startsWith('Fwd:')
-    ? original.subject
-    : `Fwd: ${original.subject}`
-
-  const mime = buildMimeMessage({
+  const mime = await buildMimeMessage({
     to,
     subject,
-    body: forwardBody,
+    body: !original.text && forwardHtml ? forwardHtml : forwardBody,
+    contentType: !original.text && forwardHtml ? 'text/html' : 'text/plain',
+    textBody: original.text ? forwardBody : undefined,
+    htmlBody: forwardHtml,
+    attachments,
   })
-
-  const raw = toBase64Url(mime)
-  const result = await client.post<GmailMessage>('/messages/send', { raw })
+  const result = await client.post<GmailMessage>('/messages/send', {
+    raw: toBase64Url(mime),
+  })
   return { id: result.id, threadId: result.threadId }
 }
 
@@ -206,12 +294,11 @@ export async function deleteMessage(
 export async function moveMessage(
   client: HttpClient,
   id: string,
-  addLabels: string[],
-  removeLabels: string[],
+  destinationLabelId: string,
 ): Promise<void> {
   await client.post(`/messages/${id}/modify`, {
-    addLabelIds: addLabels,
-    removeLabelIds: removeLabels,
+    addLabelIds: [destinationLabelId],
+    removeLabelIds: ['INBOX'],
   })
 }
 
@@ -223,17 +310,10 @@ export async function markMessage(
   const addLabelIds: string[] = []
   const removeLabelIds: string[] = []
 
-  if (options.read === true) {
-    removeLabelIds.push('UNREAD')
-  } else if (options.read === false) {
-    addLabelIds.push('UNREAD')
-  }
-
-  if (options.flagged === true) {
-    addLabelIds.push('STARRED')
-  } else if (options.flagged === false) {
-    removeLabelIds.push('STARRED')
-  }
+  if (options.read === true) removeLabelIds.push('UNREAD')
+  else if (options.read === false) addLabelIds.push('UNREAD')
+  if (options.flagged === true) addLabelIds.push('STARRED')
+  else if (options.flagged === false) removeLabelIds.push('STARRED')
 
   if (addLabelIds.length > 0 || removeLabelIds.length > 0) {
     await client.post(`/messages/${id}/modify`, { addLabelIds, removeLabelIds })
@@ -244,37 +324,43 @@ export async function searchMessages(
   client: HttpClient,
   query: string,
   top = 20,
-): Promise<{ messages: MessageSummary[]; nextPageToken?: string }> {
-  return listMessages(client, { query, top })
+  pageToken?: string,
+): Promise<GmailMessageListResult> {
+  return listMessages(client, { query, top, pageToken })
 }
 
+/** Default batch deletion is recoverable; permanent deletion is explicit. */
 export async function batchDeleteMessages(
   client: HttpClient,
   ids: string[],
+  permanent = false,
 ): Promise<void> {
-  await client.post('/messages/batchDelete', { ids })
+  if (permanent) {
+    await client.post('/messages/batchDelete', { ids })
+    return
+  }
+  await client.post('/messages/batchModify', {
+    ids,
+    addLabelIds: ['TRASH'],
+    removeLabelIds: ['INBOX'],
+  })
 }
 
 export async function importMessage(
   client: HttpClient,
-  rawMime: string,
+  rawMime: string | Buffer,
 ): Promise<{ id: string }> {
-  const raw = toBase64Url(rawMime)
-  const result = await client.post<GmailMessage>('/messages/import', { raw })
+  const result = await client.post<GmailMessage>('/messages/import', {
+    raw: toBase64Url(rawMime),
+  })
   return { id: result.id }
 }
 
-export async function untrashMessage(
-  client: HttpClient,
-  id: string,
-): Promise<void> {
+export async function untrashMessage(client: HttpClient, id: string): Promise<void> {
   await client.post(`/messages/${id}/untrash`)
 }
 
-export async function trashMessage(
-  client: HttpClient,
-  id: string,
-): Promise<void> {
+export async function trashMessage(client: HttpClient, id: string): Promise<void> {
   await client.post(`/messages/${id}/trash`)
 }
 
@@ -286,170 +372,102 @@ export async function batchModifyMessages(
 ): Promise<void> {
   await client.post('/messages/batchModify', {
     ids,
-    addLabelIds: addLabelIds || [],
-    removeLabelIds: removeLabelIds || [],
+    addLabelIds: addLabelIds ?? [],
+    removeLabelIds: removeLabelIds ?? [],
   })
 }
 
 export async function insertMessage(
   client: HttpClient,
-  rawMime: string,
+  rawMime: string | Buffer,
 ): Promise<{ id: string }> {
-  const raw = toBase64Url(rawMime)
-  const result = await client.post<GmailMessage>('/messages/insert', { raw })
+  const result = await client.post<GmailMessage>('/messages/insert', {
+    raw: toBase64Url(rawMime),
+  })
   return { id: result.id }
 }
 
-// --- Helpers ---
-
-function parseEmailAddress(raw: string): EmailAddress {
-  const match = raw.match(/^(.+?)\s*<(.+?)>$/)
-  if (match) {
-    return { name: match[1].trim().replace(/^"|"$/g, ''), address: match[2] }
-  }
-  return { address: raw.trim() }
-}
-
-function parseEmailAddresses(raw: string): EmailAddress[] {
-  if (!raw) return []
-  return raw.split(',').map((addr) => parseEmailAddress(addr.trim()))
-}
-
-function normalizeMessageSummary(msg: GmailMessage): MessageSummary {
-  const headers = msg.payload?.headers || []
-  return {
-    id: msg.id,
-    subject: getHeader(headers, 'Subject') || '(no subject)',
-    from: parseEmailAddress(getHeader(headers, 'From')),
-    to: parseEmailAddresses(getHeader(headers, 'To')),
-    date: getHeader(headers, 'Date') || new Date(parseInt(msg.internalDate || '0')).toISOString(),
-    snippet: msg.snippet,
-    isRead: !(msg.labelIds || []).includes('UNREAD'),
-    hasAttachments: hasAttachments(msg.payload),
-    labels: msg.labelIds,
-  }
-}
-
-function normalizeMessageDetail(msg: GmailMessage): MessageDetail {
-  const headers = msg.payload?.headers || []
-  const body = msg.payload ? extractTextFromPayload(msg.payload) : ''
-  const bodyType = detectBodyType(msg.payload) || 'text'
+function normalizeMessageDetail(message: GmailMessage): MessageDetail {
+  const headers = message.payload?.headers ?? []
+  const extracted = message.payload
+    ? extractBodyFromPayload(message.payload)
+    : { body: '', bodyType: 'text' as const }
 
   return {
-    id: msg.id,
-    subject: getHeader(headers, 'Subject') || '(no subject)',
-    from: parseEmailAddress(getHeader(headers, 'From')),
-    to: parseEmailAddresses(getHeader(headers, 'To')),
+    ...normalizeMessageSummary(message),
     cc: parseEmailAddresses(getHeader(headers, 'Cc')),
     bcc: parseEmailAddresses(getHeader(headers, 'Bcc')),
-    date: getHeader(headers, 'Date') || new Date(parseInt(msg.internalDate || '0')).toISOString(),
-    snippet: msg.snippet,
-    isRead: !(msg.labelIds || []).includes('UNREAD'),
-    hasAttachments: hasAttachments(msg.payload),
-    labels: msg.labelIds,
-    body,
-    bodyType,
-    threadId: msg.threadId,
+    body: extracted.body,
+    bodyType: extracted.bodyType,
+    threadId: message.threadId,
     internetMessageId: getHeader(headers, 'Message-ID'),
     importance: getHeader(headers, 'Importance') || undefined,
-    attachments: extractAttachmentSummaries(msg.payload),
+    attachments: extractGmailAttachments(message.payload),
     headers: headersToRecord(headers),
   }
 }
 
-function hasAttachments(payload?: GmailPayload): boolean {
-  if (!payload) return false
-  if (payload.body?.attachmentId) return true
-  if (payload.parts) {
-    return payload.parts.some(
-      (p) => (p.filename && p.filename.length > 0 && p.body?.attachmentId) || hasAttachments(p),
-    )
-  }
-  return false
+function normalizeAddress(value: string): string {
+  return value.trim().toLowerCase()
 }
 
-function detectBodyType(payload?: GmailPayload): 'text' | 'html' | null {
-  if (!payload) return null
-  if (payload.mimeType === 'text/html') return 'html'
-  if (payload.mimeType === 'text/plain') return 'text'
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/html') return 'html'
-    }
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/plain') return 'text'
+function collectSelfAddresses(
+  original: MessageDetail,
+  identity?: GmailReplyIdentity,
+): Set<string> {
+  const result = new Set<string>()
+  if (identity) {
+    result.add(normalizeAddress(identity.email))
+    for (const alias of identity.aliases ?? []) result.add(normalizeAddress(alias))
+  }
+
+  // These headers are useful as a safe fallback for callers that cannot yet
+  // provide account identity. They are never copied into outgoing MIME.
+  for (const name of ['Delivered-To', 'X-Original-To']) {
+    const value = findRecordHeader(original.headers, name)
+    for (const address of parseEmailAddresses(value ?? '')) {
+      result.add(normalizeAddress(address.address))
     }
   }
-  return 'text'
+  return result
 }
 
-function extractAttachmentSummaries(
-  payload?: GmailPayload,
-): Array<{ id: string; name: string; contentType: string; size: number }> {
-  if (!payload) return []
-  const attachments: Array<{ id: string; name: string; contentType: string; size: number }> = []
-
-  function walk(p: GmailPayload): void {
-    if (p.filename && p.filename.length > 0 && p.body?.attachmentId) {
-      attachments.push({
-        id: p.body.attachmentId,
-        name: p.filename,
-        contentType: p.mimeType || 'application/octet-stream',
-        size: p.body.size || 0,
-      })
-    }
-    if (p.parts) {
-      for (const part of p.parts) {
-        walk(part)
-      }
-    }
+function dedupeAddresses(
+  addresses: EmailAddress[],
+  seen: Set<string>,
+): string[] {
+  const result: string[] = []
+  for (const item of addresses) {
+    const key = normalizeAddress(item.address)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(formatEmailAddress(item))
   }
-
-  walk(payload)
-  return attachments
+  return result
 }
 
-function headersToRecord(
-  headers: Array<{ name: string; value: string }>,
-): Record<string, string> {
-  const record: Record<string, string> = {}
-  for (const h of headers) {
-    record[h.name] = h.value
-  }
-  return record
+function findRecordHeader(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  const wanted = name.toLowerCase()
+  return Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === wanted)?.[1]
 }
 
-function buildMimeWithAttachments(options: SendMessageOptions): string {
-  const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`
-  const lines: string[] = []
+function mergeReferences(
+  existing?: string,
+  messageId?: string,
+): string[] | undefined {
+  const references = [...(existing?.match(/<[^>]+>/g) ?? [])]
+  if (messageId && !references.includes(messageId)) references.push(messageId)
+  return references.length > 0 ? references : undefined
+}
 
-  lines.push(`To: ${options.to.join(', ')}`)
-  if (options.cc?.length) lines.push(`Cc: ${options.cc.join(', ')}`)
-  if (options.bcc?.length) lines.push(`Bcc: ${options.bcc.join(', ')}`)
-  lines.push(`Subject: ${options.subject}`)
-  lines.push(`MIME-Version: 1.0`)
-  lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`)
-  lines.push('')
-  lines.push(`--${boundary}`)
-  lines.push(`Content-Type: ${options.bodyType === 'html' ? 'text/html' : 'text/plain'}; charset=utf-8`)
-  lines.push(`Content-Transfer-Encoding: base64`)
-  lines.push('')
-  lines.push(Buffer.from(options.body, 'utf-8').toString('base64'))
-  lines.push('')
-
-  for (const attachment of options.attachments || []) {
-    const content = readFileSync(attachment.path)
-    const name = attachment.name || basename(attachment.path)
-    lines.push(`--${boundary}`)
-    lines.push(`Content-Type: application/octet-stream; name="${name}"`)
-    lines.push(`Content-Disposition: attachment; filename="${name}"`)
-    lines.push(`Content-Transfer-Encoding: base64`)
-    lines.push('')
-    lines.push(content.toString('base64'))
-    lines.push('')
-  }
-
-  lines.push(`--${boundary}--`)
-
-  return lines.join('\r\n')
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }

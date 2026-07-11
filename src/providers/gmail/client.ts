@@ -12,6 +12,7 @@ export function createGmailClient(account: AccountConfig): HttpClient {
   return new HttpClient({
     baseUrl: GMAIL_BASE_URL,
     accountAlias: account.alias,
+    isRetryableForbidden: isGmailQuotaError,
     getTokens: () => currentTokens,
     refreshTokens: async (): Promise<OAuthTokens> => {
       const newTokens = await refreshAccessToken({
@@ -24,4 +25,11 @@ export function createGmailClient(account: AccountConfig): HttpClient {
       return newTokens
     },
   })
+}
+
+function isGmailQuotaError(body: unknown): boolean {
+  const value = JSON.stringify(body ?? '').toLowerCase()
+  return value.includes('ratelimitexceeded')
+    || value.includes('userratelimitexceeded')
+    || value.includes('quotaexceeded')
 }

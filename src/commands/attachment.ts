@@ -1,11 +1,11 @@
 // Attachment commands
 
-import { resolveAccount } from './resolve.js'
+import { requireProvider, resolveAccount } from './resolve.js'
 import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { handleError } from '../utils/error.js'
 import * as gmailAttachments from '../providers/gmail/attachments.js'
 import * as outlookAttachments from '../providers/outlook/attachments.js'
-import { join, basename } from 'node:path'
+import { basename, resolve } from 'node:path'
 
 export async function attachmentList(
   messageId: string,
@@ -14,39 +14,27 @@ export async function attachmentList(
   try {
     const { account, client } = resolveAccount(opts.account)
 
-    if (account.provider === 'gmail') {
-      const attachments = await gmailAttachments.listAttachments(client, messageId)
-      outputList(
-        attachments.map((a) => ({
-          id: a.id,
-          name: a.name,
-          type: a.contentType,
-          size: formatSize(a.size),
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'name', label: 'Name' },
-          { key: 'type', label: 'Type' },
-          { key: 'size', label: 'Size' },
-        ],
-      )
-    } else {
-      const attachments = await outlookAttachments.listAttachments(client, messageId)
-      outputList(
-        attachments.map((a) => ({
-          id: a.id,
-          name: a.name,
-          type: a.contentType,
-          size: formatSize(a.size),
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'name', label: 'Name' },
-          { key: 'type', label: 'Type' },
-          { key: 'size', label: 'Size' },
-        ],
-      )
-    }
+    const attachments = account.provider === 'gmail'
+      ? await gmailAttachments.listAttachments(client, messageId)
+      : await outlookAttachments.listAttachments(client, messageId)
+    outputList(
+      attachments.map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        type: attachment.contentType,
+        size: attachment.size,
+      })),
+      [
+        { key: 'id', label: 'ID' },
+        { key: 'name', label: 'Name' },
+        { key: 'type', label: 'Type' },
+        {
+          key: 'size',
+          label: 'Size',
+          format: (value) => formatSize(Number(value)),
+        },
+      ],
+    )
   } catch (error) {
     handleError(error)
   }
@@ -60,23 +48,15 @@ export async function attachmentGet(
   try {
     const { account, client } = resolveAccount(opts.account)
 
-    if (account.provider === 'gmail') {
-      const attachment = await gmailAttachments.getAttachment(client, messageId, attachmentId)
-      output({
-        id: attachment.id,
-        name: attachment.name,
-        contentType: attachment.contentType,
-        size: attachment.size,
-      })
-    } else {
-      const attachment = await outlookAttachments.getAttachment(client, messageId, attachmentId)
-      output({
-        id: attachment.id,
-        name: attachment.name,
-        contentType: attachment.contentType,
-        size: attachment.size,
-      })
-    }
+    const attachment = account.provider === 'gmail'
+      ? await gmailAttachments.getAttachmentInfo(client, messageId, attachmentId)
+      : await outlookAttachments.getAttachment(client, messageId, attachmentId)
+    output({
+      id: attachment.id,
+      name: attachment.name,
+      contentType: attachment.contentType,
+      size: attachment.size,
+    })
   } catch (error) {
     handleError(error)
   }
@@ -85,30 +65,34 @@ export async function attachmentGet(
 export async function attachmentDownload(
   messageId: string,
   attachmentId: string,
-  opts: { output?: string; account?: string },
+  opts: { output?: string; force?: boolean; account?: string },
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
 
     let outputPath = opts.output
+    let outlookDetail: outlookAttachments.OutlookAttachmentDetail | undefined
 
     if (!outputPath) {
       if (account.provider === 'gmail') {
-        const att = await gmailAttachments.getAttachment(client, messageId, attachmentId)
-        outputPath = join(process.cwd(), att.name)
+        const att = await gmailAttachments.getAttachmentInfo(client, messageId, attachmentId)
+        outputPath = safeDefaultOutputPath(att.name, attachmentId)
       } else {
-        const att = await outlookAttachments.getAttachment(client, messageId, attachmentId)
-        outputPath = join(process.cwd(), att.name)
+        outlookDetail = await outlookAttachments.getAttachment(client, messageId, attachmentId)
+        outputPath = safeDefaultOutputPath(outlookDetail.name, attachmentId)
       }
     }
 
     if (account.provider === 'gmail') {
-      await gmailAttachments.downloadAttachment(client, messageId, attachmentId, outputPath)
+      await gmailAttachments.downloadAttachment(client, messageId, attachmentId, outputPath, { force: opts.force })
     } else {
-      await outlookAttachments.downloadAttachment(client, messageId, attachmentId, outputPath)
+      await outlookAttachments.downloadAttachment(client, messageId, attachmentId, outputPath, {
+        force: opts.force,
+        detail: outlookDetail,
+      })
     }
 
-    outputSuccess(`Attachment downloaded to: ${outputPath}`)
+    outputSuccess(`Attachment downloaded to: ${outputPath}`, { path: outputPath })
   } catch (error) {
     handleError(error)
   }
@@ -120,12 +104,11 @@ export async function attachmentAdd(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError(
-        'Adding attachments to existing messages is only supported for Outlook. For Gmail, use --attach when sending.',
-        account.provider,
-      )
-    }
+    requireProvider(
+      account,
+      'outlook',
+      'Adding attachments to existing messages is only supported for Outlook. For Gmail, use --attach when sending.',
+    )
     const fileName = opts.name || basename(opts.file)
     const att = await outlookAttachments.addAttachment(client, messageId, opts.file, fileName)
     outputSuccess(`Attachment added: ${att.name} (id: ${att.id})`)
@@ -141,12 +124,11 @@ export async function attachmentDelete(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError(
-        'Deleting individual attachments is only supported for Outlook.',
-        account.provider,
-      )
-    }
+    requireProvider(
+      account,
+      'outlook',
+      'Deleting individual attachments is only supported for Outlook.',
+    )
     await outlookAttachments.deleteAttachment(client, messageId, attachmentId)
     outputSuccess(`Attachment deleted: ${attachmentId}`)
   } catch (error) {
@@ -158,4 +140,27 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function safeDefaultOutputPath(remoteName: string, attachmentId: string): string {
+  return resolve(process.cwd(), sanitizeAttachmentFileName(remoteName, attachmentId))
+}
+
+export function sanitizeAttachmentFileName(remoteName: string, attachmentId: string): string {
+  const fallback = `attachment-${attachmentId.replace(/[^a-zA-Z0-9._-]/g, '_') || 'download'}`
+  let name = basename(remoteName)
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '')
+    .trim()
+    .replace(/[. ]+$/g, '')
+
+  if (!name || name === '.' || name === '..') name = fallback
+  if (name.startsWith('.')) name = `attachment-${name.slice(1) || 'download'}`
+
+  const stem = name.split('.')[0]?.toUpperCase()
+  if (stem && /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/.test(stem)) {
+    name = `attachment-${name}`
+  }
+  if (name.length > 180) name = name.slice(0, 180).replace(/[. ]+$/g, '') || fallback
+  return name
 }

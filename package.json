@@ -1,15 +1,21 @@
 {
   "name": "@lakphy/cli-mail",
   "type": "module",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "AI-oriented CLI email management tool for Gmail and Outlook",
   "author": "",
   "license": "MIT",
+  "packageManager": "pnpm@10.28.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "bin": {
     "cli-mail": "./dist/index.mjs"
   },
   "exports": {
-    ".": "./dist/index.mjs",
     "./package.json": "./package.json"
   },
   "files": [
@@ -19,21 +25,32 @@
     "build": "tsdown",
     "dev": "tsdown --watch",
     "test": "vitest",
+    "test:run": "vitest run",
     "test:cov": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check": "pnpm lint && pnpm typecheck && pnpm test:run && pnpm build",
     "release": "bumpp",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm check"
   },
   "dependencies": {
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "mailparser": "^3.9.14",
+    "nodemailer": "^9.0.3",
+    "open": "^11.0.0",
+    "p-limit": "^7.3.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0",
-    "@typescript/native-preview": "7.0.0-dev.20260316.1",
+    "@types/mailparser": "^3.4.6",
+    "@types/node": "^22.20.1",
+    "@types/nodemailer": "^8.0.1",
     "@vitest/coverage-v8": "^4.1.2",
     "bumpp": "^11.0.1",
+    "eslint": "^10.7.0",
     "tsdown": "^0.21.3",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^4.1.0"
   }
 }

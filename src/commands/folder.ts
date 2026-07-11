@@ -1,17 +1,20 @@
 // Folder/Label commands
 
-import { resolveAccount } from './resolve.js'
+import { requireProvider, resolveAccount } from './resolve.js'
 import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { ConfigError, handleError } from '../utils/error.js'
 import * as gmailLabels from '../providers/gmail/labels.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
 import * as outlookFolders from '../providers/outlook/folders.js'
+import { decodePageToken, encodePageToken } from '../utils/page-token.js'
+import { messageListColumns, messageRows, outputPageResult } from './shared.js'
 
-export async function folderList(opts: { parent?: string; account?: string }): Promise<void> {
+export async function folderList(opts: { parent?: string; top?: string; pageToken?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
 
     if (account.provider === 'gmail') {
+      if (opts.pageToken) throw new ConfigError('Gmail labels are not paginated; remove --page-token')
       const labels = await gmailLabels.listLabels(client)
       outputList(
         labels.map((l) => ({
@@ -28,9 +31,15 @@ export async function folderList(opts: { parent?: string; account?: string }): P
         ],
       )
     } else {
-      const folders = await outlookFolders.listFolders(client, opts.parent)
+      const operation = `folder.list:${opts.parent ?? ''}`
+      const pageToken = decodePageToken(opts.pageToken, account, operation)
+      const result = await outlookFolders.listFoldersPage(client, {
+        parentId: opts.parent,
+        top: opts.top ? parseInt(opts.top, 10) : 100,
+        pageToken,
+      })
       outputList(
-        folders.map((f) => ({
+        result.folders.map((f) => ({
           id: f.id,
           name: f.name,
           messages: f.messageCount ?? '',
@@ -44,6 +53,7 @@ export async function folderList(opts: { parent?: string; account?: string }): P
           { key: 'unread', label: 'Unread' },
           { key: 'children', label: 'Children' },
         ],
+        { meta: { nextToken: encodePageToken(account, operation, result.nextPageToken) } },
       )
     }
   } catch (error) {
@@ -54,13 +64,10 @@ export async function folderList(opts: { parent?: string; account?: string }): P
 export async function folderGet(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const label = await gmailLabels.getLabel(client, id)
-      output(label)
-    } else {
-      const folder = await outlookFolders.getFolder(client, id)
-      output(folder)
-    }
+    const folder = account.provider === 'gmail'
+      ? await gmailLabels.getLabel(client, id)
+      : await outlookFolders.getFolder(client, id)
+    output(folder)
   } catch (error) {
     handleError(error)
   }
@@ -70,9 +77,7 @@ export async function folderCreate(opts: { name: string; parent?: string; accoun
   try {
     const { account, client } = resolveAccount(opts.account)
     if (account.provider === 'gmail') {
-      // Gmail labels don't support parent; use "/" in name for nesting
-      const name = opts.parent ? `${opts.parent}/${opts.name}` : opts.name
-      const label = await gmailLabels.createLabel(client, name)
+      const label = await gmailLabels.createLabel(client, opts.name, opts.parent)
       outputSuccess(`Label created: ${label.name} (id: ${label.id})`)
     } else {
       const folder = await outlookFolders.createFolder(client, opts.name, opts.parent)
@@ -112,49 +117,23 @@ export async function folderDelete(id: string, opts: { account?: string }): Prom
   }
 }
 
-export async function folderMessages(id: string, opts: { top?: string; account?: string }): Promise<void> {
+export async function folderMessages(id: string, opts: { top?: string; pageToken?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
     const top = opts.top ? parseInt(opts.top, 10) : 20
+    const operation = `folder.messages:${id}`
+    const pageToken = decodePageToken(opts.pageToken, account, operation)
 
-    if (account.provider === 'gmail') {
-      // For Gmail, list messages with label filter
-      const result = await gmailMessages.listMessages(client, { folder: id, top })
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-        ],
-      )
-    } else {
-      const result = await outlookFolders.listFolderMessages(client, id, top)
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-        ],
-      )
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailMessages.listMessages(client, { folder: id, top, pageToken })
+      : await outlookFolders.listFolderMessages(client, id, { top, pageToken })
+    outputPageResult(messageRows(result.messages), messageListColumns, {
+      meta: { nextToken: encodePageToken(account, operation, result.nextPageToken) },
+      errors: 'errors' in result ? result.errors : undefined,
+      failCode: 'MESSAGE_PAGE_FAILED',
+      failMessage: 'Failed to fetch every message in this folder page',
+      itemCode: 'MESSAGE_FETCH_FAILED',
+    })
   } catch (error) {
     handleError(error)
   }
@@ -166,9 +145,11 @@ export async function folderMove(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Folder move is only supported for Outlook. Gmail labels have no hierarchy.', account.provider)
-    }
+    requireProvider(
+      account,
+      'outlook',
+      'Folder move is only supported for Outlook. Gmail labels have no hierarchy.',
+    )
     const result = await outlookFolders.moveFolder(client, id, opts.toFolder)
     output(result)
   } catch (error) {
@@ -182,9 +163,11 @@ export async function folderCopy(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Folder copy is only supported for Outlook. Gmail labels have no hierarchy.', account.provider)
-    }
+    requireProvider(
+      account,
+      'outlook',
+      'Folder copy is only supported for Outlook. Gmail labels have no hierarchy.',
+    )
     const result = await outlookFolders.copyFolder(client, id, opts.toFolder)
     outputSuccess(`Folder copied (new id: ${result.id})`)
   } catch (error) {

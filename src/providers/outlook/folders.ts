@@ -1,7 +1,12 @@
 // Outlook mail folder operations via Microsoft Graph API
 
 import type { HttpClient } from '../../utils/http.js'
-import type { FolderInfo, MessageSummary, EmailAddress } from '../types.js'
+import type { FolderInfo, MessageSummary } from '../types.js'
+import {
+  normalizeMessageSummary,
+  type GraphMessageList,
+} from './graph.js'
+import { pageMetadata, validateGraphNextLink, type OutlookPageMetadata } from './pagination.js'
 
 interface GraphFolder {
   id: string
@@ -18,49 +23,51 @@ interface GraphFolderList {
   '@odata.nextLink'?: string
 }
 
-interface GraphEmailAddress {
-  emailAddress: { name?: string; address: string }
+export interface OutlookFolderPage extends OutlookPageMetadata {
+  folders: FolderInfo[]
 }
 
-interface GraphMessage {
-  id: string
-  subject?: string
-  from?: GraphEmailAddress
-  toRecipients?: GraphEmailAddress[]
-  receivedDateTime?: string
-  bodyPreview?: string
-  isRead?: boolean
-  hasAttachments?: boolean
-  categories?: string[]
-  parentFolderId?: string
+export interface OutlookFolderListOptions {
+  parentId?: string
+  top?: number
+  pageToken?: string
 }
 
-interface GraphMessageList {
-  value: GraphMessage[]
-  '@odata.nextLink'?: string
+export interface OutlookFolderMessagePage extends OutlookPageMetadata {
+  messages: MessageSummary[]
 }
 
-export async function listFolders(
+export interface OutlookFolderMessageListOptions {
+  top?: number
+  pageToken?: string
+}
+
+export async function listFoldersPage(
   client: HttpClient,
-  parentId?: string,
-): Promise<FolderInfo[]> {
-  const path = parentId
-    ? `/mailFolders/${parentId}/childFolders`
+  options: OutlookFolderListOptions = {},
+): Promise<OutlookFolderPage> {
+  const path = options.parentId
+    ? `/mailFolders/${encodeURIComponent(options.parentId)}/childFolders`
     : '/mailFolders'
 
-  const list = await client.get<GraphFolderList>(path, {
-    '$top': 100,
-    '$select': 'id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount',
-  })
+  const list = options.pageToken
+    ? await client.get<GraphFolderList>(validateGraphNextLink(options.pageToken, path))
+    : await client.get<GraphFolderList>(path, {
+        '$top': options.top ?? 100,
+        '$select': 'id,displayName,parentFolderId,childFolderCount,totalItemCount,unreadItemCount',
+      })
 
-  return (list.value || []).map(normalizeFolder)
+  return {
+    folders: (list.value || []).map(normalizeFolder),
+    ...pageMetadata(list['@odata.nextLink']),
+  }
 }
 
 export async function getFolder(
   client: HttpClient,
   id: string,
 ): Promise<FolderInfo> {
-  const folder = await client.get<GraphFolder>(`/mailFolders/${id}`)
+  const folder = await client.get<GraphFolder>(`/mailFolders/${encodeURIComponent(id)}`)
   return normalizeFolder(folder)
 }
 
@@ -70,7 +77,7 @@ export async function createFolder(
   parentId?: string,
 ): Promise<FolderInfo> {
   const path = parentId
-    ? `/mailFolders/${parentId}/childFolders`
+    ? `/mailFolders/${encodeURIComponent(parentId)}/childFolders`
     : '/mailFolders'
 
   const folder = await client.post<GraphFolder>(path, {
@@ -84,7 +91,7 @@ export async function updateFolder(
   id: string,
   name: string,
 ): Promise<FolderInfo> {
-  const folder = await client.patch<GraphFolder>(`/mailFolders/${id}`, {
+  const folder = await client.patch<GraphFolder>(`/mailFolders/${encodeURIComponent(id)}`, {
     displayName: name,
   })
   return normalizeFolder(folder)
@@ -94,7 +101,7 @@ export async function deleteFolder(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/mailFolders/${id}`)
+  await client.delete(`/mailFolders/${encodeURIComponent(id)}`)
 }
 
 export async function moveFolder(
@@ -102,7 +109,7 @@ export async function moveFolder(
   id: string,
   destinationId: string,
 ): Promise<FolderInfo> {
-  const folder = await client.post<GraphFolder>(`/mailFolders/${id}/move`, {
+  const folder = await client.post<GraphFolder>(`/mailFolders/${encodeURIComponent(id)}/move`, {
     destinationId,
   })
   return normalizeFolder(folder)
@@ -113,7 +120,7 @@ export async function copyFolder(
   id: string,
   destinationId: string,
 ): Promise<FolderInfo> {
-  const folder = await client.post<GraphFolder>(`/mailFolders/${id}/copy`, {
+  const folder = await client.post<GraphFolder>(`/mailFolders/${encodeURIComponent(id)}/copy`, {
     destinationId,
   })
   return normalizeFolder(folder)
@@ -122,20 +129,21 @@ export async function copyFolder(
 export async function listFolderMessages(
   client: HttpClient,
   folderId: string,
-  top = 20,
-): Promise<{ messages: MessageSummary[]; nextLink?: string }> {
-  const list = await client.get<GraphMessageList>(
-    `/mailFolders/${folderId}/messages`,
-    {
-      '$top': top,
-      '$select': 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,categories,parentFolderId',
-      '$orderby': 'receivedDateTime desc',
-    },
-  )
+  options: OutlookFolderMessageListOptions = {},
+): Promise<OutlookFolderMessagePage> {
+  const path = `/mailFolders/${encodeURIComponent(folderId)}/messages`
+
+  const list = options.pageToken
+    ? await client.get<GraphMessageList>(validateGraphNextLink(options.pageToken, path))
+    : await client.get<GraphMessageList>(path, {
+        '$top': options.top ?? 20,
+        '$select': 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,categories,parentFolderId',
+        '$orderby': 'receivedDateTime desc',
+      })
 
   return {
-    messages: (list.value || []).map(normalizeMessage),
-    nextLink: list['@odata.nextLink'],
+    messages: (list.value || []).map(normalizeMessageSummary),
+    ...pageMetadata(list['@odata.nextLink']),
   }
 }
 
@@ -149,29 +157,5 @@ function normalizeFolder(folder: GraphFolder): FolderInfo {
     messageCount: folder.totalItemCount,
     unreadCount: folder.unreadItemCount,
     childFolderCount: folder.childFolderCount,
-  }
-}
-
-function fromGraphAddress(addr?: GraphEmailAddress): EmailAddress {
-  if (!addr) return { address: '' }
-  return { name: addr.emailAddress.name, address: addr.emailAddress.address }
-}
-
-function fromGraphAddresses(addrs?: GraphEmailAddress[]): EmailAddress[] {
-  return (addrs || []).map(fromGraphAddress)
-}
-
-function normalizeMessage(msg: GraphMessage): MessageSummary {
-  return {
-    id: msg.id,
-    subject: msg.subject || '(no subject)',
-    from: fromGraphAddress(msg.from),
-    to: fromGraphAddresses(msg.toRecipients),
-    date: msg.receivedDateTime || '',
-    snippet: msg.bodyPreview,
-    isRead: msg.isRead ?? false,
-    hasAttachments: msg.hasAttachments ?? false,
-    labels: msg.categories,
-    folder: msg.parentFolderId,
   }
 }

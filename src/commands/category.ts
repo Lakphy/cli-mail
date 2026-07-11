@@ -1,23 +1,16 @@
 // Category commands (Outlook-specific, with graceful handling for Gmail)
 
-import { resolveAccount } from './resolve.js'
+import { requireProvider, resolveAccount } from './resolve.js'
 import { outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { handleError } from '../utils/error.js'
 import * as outlookCategories from '../providers/outlook/categories.js'
 
-function requireOutlook(provider: string): void {
-  if (provider !== 'outlook') {
-    throw new ProviderError(
-      'Category operations are only supported for Outlook accounts. Gmail uses labels instead — use: cli-mail folder',
-      provider,
-    )
-  }
-}
+const CATEGORY_PROVIDER_EXPLANATION = 'Category operations are only supported for Outlook accounts. Gmail uses labels instead — use: cli-mail folder'
 
 export async function categoryList(opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    requireOutlook(account.provider)
+    requireProvider(account, 'outlook', CATEGORY_PROVIDER_EXPLANATION)
 
     const categories = await outlookCategories.listCategories(client)
     outputList(
@@ -40,7 +33,7 @@ export async function categoryList(opts: { account?: string }): Promise<void> {
 export async function categoryCreate(opts: { name: string; color?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    requireOutlook(account.provider)
+    requireProvider(account, 'outlook', CATEGORY_PROVIDER_EXPLANATION)
 
     const category = await outlookCategories.createCategory(client, opts.name, opts.color)
     outputSuccess(`Category created: ${category.displayName} (id: ${category.id})`)
@@ -52,7 +45,7 @@ export async function categoryCreate(opts: { name: string; color?: string; accou
 export async function categoryUpdate(id: string, opts: { name?: string; color?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    requireOutlook(account.provider)
+    requireProvider(account, 'outlook', CATEGORY_PROVIDER_EXPLANATION)
 
     const category = await outlookCategories.updateCategory(client, id, opts.name, opts.color)
     outputSuccess(`Category updated: ${category.displayName}`)
@@ -64,7 +57,7 @@ export async function categoryUpdate(id: string, opts: { name?: string; color?: 
 export async function categoryDelete(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    requireOutlook(account.provider)
+    requireProvider(account, 'outlook', CATEGORY_PROVIDER_EXPLANATION)
 
     await outlookCategories.deleteCategory(client, id)
     outputSuccess(`Category deleted: ${id}`)

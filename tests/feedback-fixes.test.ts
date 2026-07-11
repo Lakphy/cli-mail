@@ -150,7 +150,7 @@ describe('Outlook Search Fix', () => {
 
 // --- 4. Config store: renameAccount ---
 
-import { renameAccount, loadConfig, saveConfig, addAccount, setDefaultAccount, setConfigPath, resetConfigPath } from '../src/config/store'
+import { renameAccount, loadConfig, saveConfig, setDefaultAccount, setConfigPath, resetConfigPath } from '../src/config/store'
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { ConfigError } from '../src/utils/error'
@@ -209,10 +209,13 @@ describe('Account Rename', () => {
     expect(config.accounts.find((a) => a.alias === 'old-alias')).toBeUndefined()
   })
 
-  test('renameAccount updates default_account reference', () => {
+  test('renameAccount preserves the stable default account reference', () => {
+    const defaultAccountId = loadConfig().defaultAccountId
     renameAccount('old-alias', 'new-alias')
     const config = loadConfig()
-    expect(config.default_account).toBe('new-alias')
+    expect(config.defaultAccountId).toBe(defaultAccountId)
+    expect(config.accounts.find((account) => account.id === defaultAccountId)?.alias)
+      .toBe('new-alias')
   })
 
   test('renameAccount throws on conflicting alias', () => {
@@ -232,43 +235,48 @@ describe('Error Suggestions', () => {
   test('AuthError includes re-authenticate suggestion', () => {
     const error = new AuthError('token invalid')
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('Re-authenticate')
+    expect(output.error.suggestion).toContain('Re-authenticate')
   })
 
   test('TokenExpiredError includes re-authenticate suggestion', () => {
     const error = new TokenExpiredError()
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('Re-authenticate')
+    expect(output.error.suggestion).toContain('Re-authenticate')
   })
 
   test('RateLimitError includes retry suggestion', () => {
     const error = new RateLimitError(5000)
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('Retry after')
+    expect(output.error.suggestion).toContain('Retry after')
   })
 
   test('ApiError with 503 suggests retry', () => {
     const error = new ApiError('Service temporarily unavailable', 503)
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('temporarily unavailable')
+    expect(output.error.suggestion).toContain('temporarily unavailable')
   })
 
-  test('ApiError with orderBy message suggests alternative', () => {
-    const error = new ApiError("The query parameter '$orderBy' is not supported", 400)
+  test('ApiError exposes a suggestion attached by its provider', () => {
+    const error = new ApiError(
+      "The query parameter '$orderBy' is not supported",
+      400,
+      undefined,
+      'Search and sorting cannot be combined for this provider.',
+    )
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('sorting')
+    expect(output.error.suggestion).toContain('sorting')
   })
 
   test('ApiError with 403 OAuth suggests test users', () => {
     const error = new ApiError('access_denied', 403)
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('OAuth')
+    expect(output.error.suggestion).toContain('OAuth')
   })
 
   test('ConfigError with "not found" suggests account list', () => {
     const error = new ConfigError('Account not found: xyz')
     const output = JSON.parse(formatErrorOutput(error))
-    expect(output.suggestion).toContain('account list')
+    expect(output.error.suggestion).toContain('account list')
   })
 })
 

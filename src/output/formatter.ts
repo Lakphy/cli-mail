@@ -1,8 +1,38 @@
-// Output formatter — Markdown (default) and JSON modes
-// Designed for AI consumption: markdown is default, JSON available via --format json
-// IMPORTANT: Both modes MUST output identical data fields and values.
+// Central CLI output contract. Markdown remains human-friendly; JSON is stable for automation.
+
+import { redactSensitive, redactText } from '../utils/redact.js'
 
 export type OutputFormat = 'markdown' | 'json'
+
+export type OutputMeta = Record<string, unknown>
+
+export interface OutputOptions {
+  format?: OutputFormat
+  meta?: OutputMeta
+  warnings?: string[]
+}
+
+export interface OutputColumn {
+  key: string
+  label: string
+  /** Markdown-only display formatter. JSON always retains the original item value. */
+  format?: (value: unknown, item: Record<string, unknown>) => string
+}
+
+export interface ErrorPayload {
+  code: string
+  message: string
+  statusCode?: number
+  details?: unknown
+  suggestion?: string
+}
+
+export interface PartialError {
+  code: string
+  message: string
+  item?: unknown
+  details?: unknown
+}
 
 let globalFormat: OutputFormat = 'markdown'
 
@@ -10,172 +40,195 @@ export function setGlobalFormat(format: OutputFormat): void {
   globalFormat = format
 }
 
-export function getGlobalFormat(): OutputFormat {
-  return globalFormat
-}
-
-/**
- * Output a single object (e.g., a message, a folder)
- * Both markdown and JSON modes output the same data.
- */
-export function output(data: unknown, format?: OutputFormat): void {
-  const fmt = format || globalFormat
-  if (fmt === 'json') {
-    process.stdout.write(JSON.stringify(data, null, 2) + '\n')
-  } else {
-    process.stdout.write(formatAsMarkdown(data) + '\n')
+export function output(
+  data: unknown,
+  options: OutputOptions = {},
+): void {
+  const format = options.format ?? globalFormat
+  if (format === 'json') {
+    writeJson({
+      ok: true,
+      data,
+      meta: options.meta ?? {},
+      warnings: redactWarnings(options.warnings),
+    })
+    return
   }
+
+  process.stdout.write(`${formatAsMarkdown(data)}\n`)
+  writeMarkdownWarnings(options.warnings)
 }
 
-/**
- * Output a list of objects.
- *
- * - `columns` controls which fields appear in the markdown table and their display labels.
- * - In JSON mode, the full `items` array is always output (ignoring `columns`).
- * - Boolean values are automatically rendered as ✓/✗ in markdown.
- */
 export function outputList(
   items: Record<string, unknown>[],
-  columns: { key: string; label: string }[],
-  format?: OutputFormat,
+  columns: OutputColumn[],
+  options: OutputOptions = {},
 ): void {
-  const fmt = format || globalFormat
-  if (fmt === 'json') {
-    // JSON mode: output complete items, not filtered by columns
-    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+  const format = options.format ?? globalFormat
+  if (format === 'json') {
+    writeJson({
+      ok: true,
+      data: items,
+      meta: options.meta ?? {},
+      warnings: redactWarnings(options.warnings),
+    })
     return
   }
 
   if (items.length === 0) {
     process.stdout.write('No items found.\n')
+    writeMarkdownMeta(options.meta)
+    writeMarkdownWarnings(options.warnings)
     return
   }
 
-  // Markdown table using the provided columns
-  const header = '| ' + columns.map((c) => c.label).join(' | ') + ' |'
-  const separator = '| ' + columns.map((c) => '-'.repeat(Math.max(c.label.length, 3))).join(' | ') + ' |'
-
+  const header = `| ${columns.map((column) => column.label).join(' | ')} |`
+  const separator = `| ${columns
+    .map((column) => '-'.repeat(Math.max(column.label.length, 3)))
+    .join(' | ')} |`
   const rows = items.map((item) => {
-    const cells = columns.map((c) => {
-      const val = getNestedValue(item, c.key)
-      return formatCellValue(val)
+    const cells = columns.map((column) => {
+      const value = getNestedValue(item, column.key)
+      return formatCellValue(column.format ? column.format(value, item) : value)
     })
-    return '| ' + cells.join(' | ') + ' |'
+    return `| ${cells.join(' | ')} |`
   })
 
-  process.stdout.write([header, separator, ...rows].join('\n') + '\n')
+  process.stdout.write(`${[header, separator, ...rows].join('\n')}\n`)
+  writeMarkdownMeta(options.meta)
+  writeMarkdownWarnings(options.warnings)
 }
 
-/**
- * Output a success message
- */
-export function outputSuccess(message: string): void {
-  if (globalFormat === 'json') {
-    process.stdout.write(JSON.stringify({ success: true, message }) + '\n')
-  } else {
-    process.stdout.write(`> ✓ ${message}\n`)
-  }
-}
-
-/**
- * Output an error in the current format
- */
-export function outputError(
-  error: string,
-  opts?: { code?: string; statusCode?: number; details?: unknown; suggestion?: string },
+export function outputSuccess(
+  message: string,
+  data?: Record<string, unknown>,
+  options: OutputOptions = {},
 ): void {
+  const value = data ? { message, ...data } : { message }
   if (globalFormat === 'json') {
-    process.stdout.write(
-      JSON.stringify(
-        {
-          error,
-          ...(opts?.code ? { code: opts.code } : {}),
-          ...(opts?.statusCode ? { statusCode: opts.statusCode } : {}),
-          ...(opts?.details ? { details: opts.details } : {}),
-          ...(opts?.suggestion ? { suggestion: opts.suggestion } : {}),
-        },
-        null,
-        2,
-      ) + '\n',
-    )
-  } else {
-    let md = `> ❌ **Error**: ${error}\n`
-    if (opts?.code) {
-      md += `> **Code**: ${opts.code}\n`
-    }
-    if (opts?.statusCode) {
-      md += `> **Status**: ${opts.statusCode}\n`
-    }
-    if (opts?.details) {
-      md += `> **Details**: ${typeof opts.details === 'string' ? opts.details : JSON.stringify(opts.details)}\n`
-    }
-    if (opts?.suggestion) {
-      md += `> 💡 **Suggestion**: ${opts.suggestion}\n`
-    }
-    process.stderr.write(md)
+    writeJson({
+      ok: true,
+      data: value,
+      meta: options.meta ?? {},
+      warnings: redactWarnings(options.warnings),
+    })
+    return
   }
+
+  process.stdout.write(`> ✓ ${terminalSafe(message)}\n`)
+  writeMarkdownWarnings(options.warnings)
 }
 
-/**
- * Output raw text (for raw MIME content, etc.)
- */
-export function outputRaw(text: string): void {
-  process.stdout.write(text)
-  if (!text.endsWith('\n')) {
-    process.stdout.write('\n')
+export function outputPartial(
+  data: unknown,
+  errors: PartialError[],
+  options: OutputOptions = {},
+): void {
+  process.exitCode = 2
+  if (globalFormat === 'json') {
+    writeJson({
+      ok: false,
+      partial: true,
+      data,
+      meta: options.meta ?? {},
+      warnings: redactWarnings(options.warnings),
+      errors: redactSensitive(errors),
+    })
+    return
   }
+
+  process.stdout.write(`${formatAsMarkdown(data)}\n`)
+  for (const error of errors) {
+    process.stderr.write(`> ⚠ **${terminalSafe(error.code)}**: ${terminalSafe(redactText(error.message))}\n`)
+  }
+  writeMarkdownWarnings(options.warnings)
 }
 
-// --- Internal helpers ---
+export function outputError(error: string, options: Omit<ErrorPayload, 'message' | 'code'> & { code?: string } = {}): void {
+  outputFailure({
+    code: options.code ?? 'UNKNOWN_ERROR',
+    message: error,
+    ...(options.statusCode !== undefined ? { statusCode: options.statusCode } : {}),
+    ...(options.details !== undefined ? { details: options.details } : {}),
+    ...(options.suggestion ? { suggestion: options.suggestion } : {}),
+  })
+}
+
+export function outputFailure(error: ErrorPayload): void {
+  const safeError = redactSensitive(error) as ErrorPayload
+  if (globalFormat === 'json') {
+    writeJson({ ok: false, error: safeError })
+    return
+  }
+
+  let markdown = `> ❌ **Error**: ${terminalSafe(safeError.message)}\n> **Code**: ${terminalSafe(safeError.code)}\n`
+  if (safeError.statusCode !== undefined) markdown += `> **Status**: ${safeError.statusCode}\n`
+  if (safeError.details !== undefined) {
+    const details = typeof safeError.details === 'string'
+      ? terminalSafe(safeError.details)
+      : JSON.stringify(safeError.details)
+    markdown += `> **Details**: ${details}\n`
+  }
+  if (safeError.suggestion) markdown += `> 💡 **Suggestion**: ${terminalSafe(safeError.suggestion)}\n`
+  process.stderr.write(markdown)
+}
+
+/** Write an RFC 822/MIME payload without changing its bytes. */
+export function outputRaw(value: string | Buffer): void {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value)
+  if (globalFormat === 'json') {
+    output({
+      content: bytes.toString('base64'),
+      encoding: 'base64',
+      mediaType: 'message/rfc822',
+      byteLength: bytes.byteLength,
+    })
+    return
+  }
+
+  process.stdout.write(bytes)
+}
+
+function writeJson(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`)
+}
+
+function writeMarkdownWarnings(warnings: string[] | undefined): void {
+  for (const warning of redactWarnings(warnings)) process.stderr.write(`> ⚠ ${terminalSafe(warning)}\n`)
+}
+
+function writeMarkdownMeta(meta: OutputMeta | undefined): void {
+  if (!meta) return
+  if (typeof meta.nextToken === 'string') {
+    process.stdout.write(`\n**nextToken**: ${terminalSafe(meta.nextToken)}\n`)
+  }
+}
 
 function formatAsMarkdown(data: unknown, depth = 0): string {
-  if (data === null || data === undefined) {
-    return 'null'
-  }
-
-  if (typeof data === 'string' || typeof data === 'number') {
-    return String(data)
-  }
-
-  if (typeof data === 'boolean') {
-    return data ? '✓' : '✗'
-  }
+  if (data === null || data === undefined) return 'null'
+  if (typeof data === 'string') return terminalSafe(data)
+  if (typeof data === 'number') return String(data)
+  if (typeof data === 'boolean') return data ? '✓' : '✗'
 
   if (Array.isArray(data)) {
     if (data.length === 0) return '(empty list)'
-    return data
-      .map((item, i) => {
-        const prefix = `${i + 1}. `
-        const content = formatAsMarkdown(item, depth + 1)
-        return prefix + content
-      })
-      .join('\n')
+    return data.map((item, index) => `${index + 1}. ${formatAsMarkdown(item, depth + 1)}`).join('\n')
   }
 
   if (typeof data === 'object') {
-    const obj = data as Record<string, unknown>
     const lines: string[] = []
-    for (const [key, value] of Object.entries(obj)) {
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
       if (value === undefined) continue
+      const safeKey = terminalSafe(key)
       if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        lines.push(`**${key}**:`)
-        const nested = formatAsMarkdown(value, depth + 1)
-        const indented = nested
-          .split('\n')
-          .map((l) => '  ' + l)
-          .join('\n')
-        lines.push(indented)
+        lines.push(`**${safeKey}**:`)
+        lines.push(formatAsMarkdown(value, depth + 1).split('\n').map((line) => `  ${line}`).join('\n'))
       } else if (Array.isArray(value)) {
-        lines.push(`**${key}**:`)
-        if (value.length === 0) {
-          lines.push('  (empty)')
-        } else {
-          for (const item of value) {
-            lines.push('  - ' + formatAsMarkdown(item, depth + 1).replace(/\n/g, '\n    '))
-          }
-        }
+        lines.push(`**${safeKey}**:`)
+        if (value.length === 0) lines.push('  (empty)')
+        else for (const item of value) lines.push(`  - ${formatAsMarkdown(item, depth + 1).replace(/\n/g, '\n    ')}`)
       } else {
-        lines.push(`**${key}**: ${formatCellValue(value)}`)
+        lines.push(`**${safeKey}**: ${formatCellValue(value)}`)
       }
     }
     return lines.join('\n')
@@ -184,27 +237,30 @@ function formatAsMarkdown(data: unknown, depth = 0): string {
   return String(data)
 }
 
-function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-  const parts = path.split('.')
-  let current: unknown = obj
-  for (const part of parts) {
-    if (current === null || current === undefined) return ''
-    if (typeof current === 'object') {
-      current = (current as Record<string, unknown>)[part]
-    } else {
-      return ''
-    }
+function getNestedValue(object: Record<string, unknown>, path: string): unknown {
+  let current: unknown = object
+  for (const part of path.split('.')) {
+    if (current === null || current === undefined || typeof current !== 'object') return ''
+    current = (current as Record<string, unknown>)[part]
   }
   return current
 }
 
-/**
- * Format a cell value for markdown display.
- * Booleans are rendered as ✓/✗ for AI readability.
- */
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return ''
   if (typeof value === 'boolean') return value ? '✓' : '✗'
   if (typeof value === 'object') return JSON.stringify(value)
-  return String(value).replace(/\|/g, '\\|').replace(/\n/g, ' ')
+  return terminalSafe(String(value)).replace(/\|/g, '\\|').replace(/\n/g, ' ')
+}
+
+function redactWarnings(warnings: string[] | undefined): string[] {
+  return (warnings ?? []).map(redactText)
+}
+
+function terminalSafe(value: string): string {
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '')
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+    .replace(/\r/g, '')
+    .replace(/\t/g, ' ')
 }

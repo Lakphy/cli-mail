@@ -30,8 +30,8 @@ export function groupList(): void {
 
 export function groupShow(tag: string): void {
   try {
-    const accounts = getAccountsByTag(tag)
     const config = loadConfig()
+    const accounts = getAccountsByTag(tag, config)
 
     if (accounts.length === 0) {
       output({ message: `No accounts found with tag: ${tag}` })
@@ -43,7 +43,7 @@ export function groupShow(tag: string): void {
         alias: a.alias,
         provider: a.provider,
         email: a.email,
-        default: a.alias === config.default_account,
+        default: a.id === config.defaultAccountId,
       })),
       [
         { key: 'alias', label: 'Alias' },

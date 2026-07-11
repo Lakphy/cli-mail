@@ -15,7 +15,7 @@ describe('Gmail Labels Provider', () => {
     vi.clearAllMocks()
   })
 
-  test('listLabels returns mapped folders', async () => {
+  test('listLabels does not trust counts on the list response', async () => {
     ;(mockClient.get as Mock).mockResolvedValue({
       labels: [{ id: 'L1', name: 'MyLabel', messagesTotal: 10, messagesUnread: 2 }]
     })
@@ -25,6 +25,22 @@ describe('Gmail Labels Provider', () => {
     expect(result.length).toBe(1)
     expect(result[0].id).toBe('L1')
     expect(result[0].name).toBe('MyLabel')
+    expect(result[0].messageCount).toBeUndefined()
+    expect(result[0].unreadCount).toBeUndefined()
+  })
+
+  test('listLabels fetches label details when counts are requested', async () => {
+    ;(mockClient.get as Mock)
+      .mockResolvedValueOnce({ labels: [{ id: 'L1', name: 'MyLabel' }] })
+      .mockResolvedValueOnce({
+        id: 'L1',
+        name: 'MyLabel',
+        messagesTotal: 10,
+        messagesUnread: 2,
+      })
+
+    const result = await listLabels(mockClient, { includeCounts: true })
+    expect(mockClient.get).toHaveBeenNthCalledWith(2, '/labels/L1')
     expect(result[0].messageCount).toBe(10)
     expect(result[0].unreadCount).toBe(2)
   })
@@ -49,6 +65,17 @@ describe('Gmail Labels Provider', () => {
       messageListVisibility: 'show'
     })
     expect(result.id).toBe('L3')
+  })
+
+  test('createLabel builds Gmail nesting from a separate parent', async () => {
+    ;(mockClient.post as Mock).mockResolvedValue({ id: 'L4', name: 'Projects/Launch' })
+    const result = await createLabel(mockClient, 'Launch', 'Projects')
+    expect(mockClient.post).toHaveBeenCalledWith('/labels', {
+      name: 'Projects/Launch',
+      labelListVisibility: 'labelShow',
+      messageListVisibility: 'show',
+    })
+    expect(result.name).toBe('Projects/Launch')
   })
 
   test('updateLabel patches to /labels/{id}', async () => {

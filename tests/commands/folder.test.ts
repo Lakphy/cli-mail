@@ -1,26 +1,34 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { folderList, folderGet, folderMove, folderCopy } from '../../src/commands/folder'
+import { folderCreate, folderList, folderGet, folderMessages, folderMove, folderCopy } from '../../src/commands/folder'
 import * as resolveModule from '../../src/commands/resolve'
 import * as formatterModule from '../../src/output/formatter'
 import * as gmailLabels from '../../src/providers/gmail/labels'
 import * as outlookFolders from '../../src/providers/outlook/folders'
+import * as gmailMessages from '../../src/providers/gmail/messages'
 
-vi.mock('../../src/commands/resolve', () => ({ resolveAccount: vi.fn() }))
+vi.mock('../../src/commands/resolve', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/resolve')>(),
+  resolveAccount: vi.fn(),
+}))
 vi.mock('../../src/output/formatter', () => ({
   output: vi.fn(),
   outputList: vi.fn(),
+  outputPartial: vi.fn(),
   outputSuccess: vi.fn(),
 }))
 vi.mock('../../src/providers/gmail/labels', () => ({
+  createLabel: vi.fn(),
   listLabels: vi.fn(),
   getLabel: vi.fn(),
 }))
 vi.mock('../../src/providers/outlook/folders', () => ({
-  listFolders: vi.fn(),
+  listFoldersPage: vi.fn(),
   getFolder: vi.fn(),
   moveFolder: vi.fn(),
   copyFolder: vi.fn(),
+  listFolderMessages: vi.fn(),
 }))
+vi.mock('../../src/providers/gmail/messages', () => ({ listMessages: vi.fn() }))
 vi.mock('../../src/utils/error', () => ({
   handleError: vi.fn()
 }))
@@ -39,11 +47,34 @@ describe('Folder Command Handlers', () => {
     expect(gmailLabels.listLabels).toHaveBeenCalledWith(dummyClient)
 
     vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: { provider: 'outlook' } as any, client: dummyClient })
-    vi.mocked(outlookFolders.listFolders).mockResolvedValue([])
+    vi.mocked(outlookFolders.listFoldersPage).mockResolvedValue({ folders: [] })
     await folderList({ parent: 'p1' })
-    expect(outlookFolders.listFolders).toHaveBeenCalledWith(dummyClient, 'p1')
+    expect(outlookFolders.listFoldersPage).toHaveBeenCalledWith(dummyClient, {
+      parentId: 'p1',
+      top: 100,
+      pageToken: undefined,
+    })
 
     expect(formatterModule.outputList).toHaveBeenCalledTimes(2)
+  })
+
+  test('folderCreate leaves Gmail parent/name nesting to the provider', async () => {
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({
+      account: { provider: 'gmail' } as any,
+      client: dummyClient,
+    })
+    vi.mocked(gmailLabels.createLabel).mockResolvedValue({
+      id: 'label-1',
+      name: 'Projects/Launch',
+    })
+
+    await folderCreate({ name: 'Launch', parent: 'Projects' })
+
+    expect(gmailLabels.createLabel).toHaveBeenCalledWith(
+      dummyClient,
+      'Launch',
+      'Projects',
+    )
   })
 
   test('folderMove successfully routes to Outlook', async () => {
@@ -53,6 +84,32 @@ describe('Folder Command Handlers', () => {
     await folderMove('f-old', { toFolder: 'f-dest' })
     expect(outlookFolders.moveFolder).toHaveBeenCalledWith(dummyClient, 'f-old', 'f-dest')
     expect(formatterModule.output).toHaveBeenCalled()
+  })
+
+  test('folderMessages reuses the message page shape and partial contract', async () => {
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({
+      account: { id: 'gmail-1', provider: 'gmail' } as any,
+      client: dummyClient,
+    })
+    vi.mocked(gmailMessages.listMessages).mockResolvedValue({
+      messages: [{
+        id: 'ok',
+        from: { address: 'sender@example.com' },
+        subject: 'Subject',
+        date: '2026-07-11T00:00:00.000Z',
+        isRead: true,
+        hasAttachments: true,
+      } as any],
+      errors: [{ id: 'bad', message: 'failed' }],
+    })
+
+    await folderMessages('INBOX', {})
+
+    expect(formatterModule.outputPartial).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: 'ok', attachments: true })],
+      [{ code: 'MESSAGE_FETCH_FAILED', message: 'failed', item: { id: 'bad' } }],
+      { meta: { nextToken: undefined } },
+    )
   })
 
   test('folderMove throws Error for Gmail', async () => {

@@ -1,43 +1,43 @@
 // Outlook draft operations via Microsoft Graph API
 
 import type { HttpClient } from '../../utils/http.js'
-import type { DraftSummary, DraftDetail, EmailAddress } from '../types.js'
+import type { DraftSummary, DraftDetail } from '../types.js'
+import {
+  buildGraphMessage,
+  fromGraphAddress,
+  fromGraphAddresses,
+  toGraphAddress,
+  type GraphMessage,
+  type GraphMessageList,
+} from './graph.js'
+import { pageMetadata, validateGraphNextLink, type OutlookPageMetadata } from './pagination.js'
 
-interface GraphEmailAddress {
-  emailAddress: { name?: string; address: string }
+export interface OutlookDraftPage extends OutlookPageMetadata {
+  drafts: DraftSummary[]
 }
 
-interface GraphMessage {
-  id: string
-  subject?: string
-  from?: GraphEmailAddress
-  toRecipients?: GraphEmailAddress[]
-  ccRecipients?: GraphEmailAddress[]
-  bccRecipients?: GraphEmailAddress[]
-  body?: { contentType: string; content: string }
-  bodyPreview?: string
-  lastModifiedDateTime?: string
-  isDraft?: boolean
-}
-
-interface GraphMessageList {
-  value: GraphMessage[]
-  '@odata.nextLink'?: string
+export interface OutlookDraftListOptions {
+  top?: number
+  pageToken?: string
 }
 
 export async function listDrafts(
   client: HttpClient,
-  top = 20,
-): Promise<{ drafts: DraftSummary[]; nextLink?: string }> {
-  const list = await client.get<GraphMessageList>('/mailFolders/Drafts/messages', {
-    '$top': top,
-    '$select': 'id,subject,toRecipients,bodyPreview,lastModifiedDateTime',
-    '$orderby': 'lastModifiedDateTime desc',
-  })
+  options: OutlookDraftListOptions = {},
+): Promise<OutlookDraftPage> {
+  const path = '/mailFolders/Drafts/messages'
+
+  const list = options.pageToken
+    ? await client.get<GraphMessageList>(validateGraphNextLink(options.pageToken, path))
+    : await client.get<GraphMessageList>(path, {
+        '$top': options.top ?? 20,
+        '$select': 'id,subject,toRecipients,bodyPreview,lastModifiedDateTime',
+        '$orderby': 'lastModifiedDateTime desc',
+      })
 
   return {
     drafts: (list.value || []).map(normalizeDraftSummary),
-    nextLink: list['@odata.nextLink'],
+    ...pageMetadata(list['@odata.nextLink']),
   }
 }
 
@@ -45,7 +45,7 @@ export async function getDraft(
   client: HttpClient,
   id: string,
 ): Promise<DraftDetail> {
-  const msg = await client.get<GraphMessage>(`/messages/${id}`, {
+  const msg = await client.get<GraphMessage>(`/messages/${encodeURIComponent(id)}`, {
     '$select': 'id,subject,from,toRecipients,ccRecipients,bccRecipients,body,bodyPreview,lastModifiedDateTime',
   })
   return normalizeDraftDetail(msg)
@@ -62,23 +62,7 @@ export async function createDraft(
     bodyType?: 'text' | 'html'
   },
 ): Promise<{ id: string }> {
-  const draft: Record<string, unknown> = {
-    subject: options.subject,
-    body: {
-      contentType: options.bodyType === 'html' ? 'HTML' : 'Text',
-      content: options.body,
-    },
-    toRecipients: options.to.map(toGraphAddress),
-  }
-
-  if (options.cc?.length) {
-    draft.ccRecipients = options.cc.map(toGraphAddress)
-  }
-  if (options.bcc?.length) {
-    draft.bccRecipients = options.bcc.map(toGraphAddress)
-  }
-
-  const result = await client.post<GraphMessage>('/messages', draft)
+  const result = await client.post<GraphMessage>('/messages', buildGraphMessage(options))
   return { id: result.id }
 }
 
@@ -99,10 +83,20 @@ export async function updateDraft(
   if (options.subject !== undefined) {
     updates.subject = options.subject
   }
-  if (options.body !== undefined) {
+  if (options.body !== undefined || options.bodyType !== undefined) {
+    let existingBody: GraphMessage['body']
+    if (options.body === undefined || options.bodyType === undefined) {
+      const existing = await client.get<GraphMessage>(`/messages/${encodeURIComponent(id)}`, {
+        '$select': 'body',
+      })
+      existingBody = existing.body
+    }
+
     updates.body = {
-      contentType: (options.bodyType || 'text') === 'html' ? 'HTML' : 'Text',
-      content: options.body,
+      contentType: options.bodyType
+        ? (options.bodyType === 'html' ? 'HTML' : 'Text')
+        : (existingBody?.contentType || 'Text'),
+      content: options.body ?? existingBody?.content ?? '',
     }
   }
   if (options.to) {
@@ -115,37 +109,26 @@ export async function updateDraft(
     updates.bccRecipients = options.bcc.map(toGraphAddress)
   }
 
-  const result = await client.patch<GraphMessage>(`/messages/${id}`, updates)
-  return { id: result.id }
+  if (Object.keys(updates).length === 0) {
+    throw new TypeError('At least one draft field must be provided')
+  }
+
+  const result = await client.patch<GraphMessage | undefined>(`/messages/${encodeURIComponent(id)}`, updates)
+  return { id: result?.id || id }
 }
 
 export async function sendDraft(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.post(`/messages/${id}/send`)
+  await client.post(`/messages/${encodeURIComponent(id)}/send`)
 }
 
 export async function deleteDraft(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/messages/${id}`)
-}
-
-// --- Helpers ---
-
-function toGraphAddress(addr: string): GraphEmailAddress {
-  return { emailAddress: { address: addr } }
-}
-
-function fromGraphAddress(addr?: GraphEmailAddress): EmailAddress {
-  if (!addr) return { address: '' }
-  return { name: addr.emailAddress.name, address: addr.emailAddress.address }
-}
-
-function fromGraphAddresses(addrs?: GraphEmailAddress[]): EmailAddress[] {
-  return (addrs || []).map(fromGraphAddress)
+  await client.delete(`/messages/${encodeURIComponent(id)}`)
 }
 
 function normalizeDraftSummary(msg: GraphMessage): DraftSummary {

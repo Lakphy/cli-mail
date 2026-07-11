@@ -1,108 +1,58 @@
-# Search Query Syntax Reference
+# Search syntax
 
-## Gmail Search Syntax
+Determine the account provider before constructing a query. Gmail and Outlook queries are not interchangeable.
 
-Gmail uses a powerful query language for searching emails.
+## Gmail
 
-### Basic Operators
+Pass Gmail search syntax to `message search --query`.
 
-- `from:sender@example.com` - Emails from specific sender
-- `to:recipient@example.com` - Emails to specific recipient
-- `subject:keyword` - Search in subject line
-- `has:attachment` - Emails with attachments
-- `filename:report.pdf` - Specific attachment filename
-- `is:unread` - Unread emails
-- `is:read` - Read emails
-- `is:starred` - Starred emails
-- `is:important` - Important emails
-- `label:work` - Emails with specific label
+| Intent | Query |
+|---|---|
+| Sender | `from:sender@example.com` |
+| Recipient | `to:recipient@example.com` |
+| Subject | `subject:invoice` |
+| Unread | `is:unread` |
+| Starred | `is:starred` |
+| Attachment | `has:attachment` |
+| Filename | `filename:report.pdf` |
+| Newer than seven days | `newer_than:7d` |
+| Date range | `after:2026/01/01 before:2026/02/01` |
+| Exclusion | `subject:project -meeting` |
 
-### Date Operators
-
-- `after:2024/01/01` - After specific date
-- `before:2024/12/31` - Before specific date
-- `newer_than:7d` - Newer than 7 days (d=days, m=months, y=years)
-- `older_than:1m` - Older than 1 month
-
-### Logical Operators
-
-- `keyword1 OR keyword2` - Either keyword
-- `keyword1 AND keyword2` - Both keywords (default behavior)
-- `-keyword` - Exclude keyword
-- `"exact phrase"` - Exact phrase match
-
-### Examples
+Example:
 
 ```bash
-# Unread emails from boss
-cli-mail msg search --query "from:boss@company.com is:unread"
-
-# Emails with PDF attachments from last week
-cli-mail msg search --query "has:attachment filename:pdf newer_than:7d"
-
-# Important emails not yet read
-cli-mail msg search --query "is:important is:unread"
-
-# Emails about project excluding meetings
-cli-mail msg search --query "subject:project -meeting"
+cli-mail message search \
+  --account personal \
+  --query 'from:boss@example.com is:unread has:attachment'
 ```
 
-## Outlook Search Syntax
+## Outlook
 
-Outlook uses OData query syntax (similar but different from Gmail).
+`message search` uses Microsoft Graph `$search` with Keyword Query Language (KQL), not OData `$filter`. Unqualified text searches the default message fields (`from`, `subject`, and `body`). Useful property queries include:
 
-### Basic Filters
+| Intent | KQL query |
+|---|---|
+| Sender | `from:sender@example.com` |
+| Subject | `subject:invoice` |
+| Attachment | `hasAttachment:true` |
+| Exact phrase | `"quarterly report"` |
+| Combine criteria | `from:sender@example.com subject:invoice` |
 
-- `from/emailAddress/address eq 'sender@example.com'` - From specific sender
-- `toRecipients/any(r:r/emailAddress/address eq 'recipient@example.com')` - To specific recipient
-- `subject eq 'Meeting'` - Exact subject match
-- `contains(subject, 'keyword')` - Subject contains keyword
-- `hasAttachments eq true` - Has attachments
-- `isRead eq false` - Unread emails
-- `importance eq 'high'` - High importance
-
-### Date Filters
-
-- `receivedDateTime ge 2024-01-01T00:00:00Z` - After date (ge = greater or equal)
-- `receivedDateTime le 2024-12-31T23:59:59Z` - Before date (le = less or equal)
-
-### Logical Operators
-
-- `and` - Both conditions
-- `or` - Either condition
-- `not` - Negate condition
-
-### Examples
+Example:
 
 ```bash
-# Unread emails from boss
-cli-mail msg search --query "from/emailAddress/address eq 'boss@company.com' and isRead eq false"
-
-# Emails with attachments received today
-cli-mail msg search --query "hasAttachments eq true and receivedDateTime ge 2024-03-27T00:00:00Z"
-
-# High importance unread emails
-cli-mail msg search --query "importance eq 'high' and isRead eq false"
-
-# Emails containing keyword in subject
-cli-mail msg search --query "contains(subject, 'urgent')"
+cli-mail message search \
+  --account work \
+  --query 'from:boss@example.com subject:budget'
 ```
 
-## Quick Reference Table
+Do not pass expressions such as `isRead eq false` or `contains(subject, ...)` to `message search`; those are OData filter expressions and are not this command's contract. If the requested Outlook property is not supported by KQL, explain the limitation and narrow the result with a supported query rather than inventing syntax.
 
-| Need | Gmail | Outlook |
-|------|-------|---------|
-| Unread | `is:unread` | `isRead eq false` |
-| Has attachment | `has:attachment` | `hasAttachments eq true` |
-| From sender | `from:email@example.com` | `from/emailAddress/address eq 'email@example.com'` |
-| Subject contains | `subject:keyword` | `contains(subject, 'keyword')` |
-| After date | `after:2024/01/01` | `receivedDateTime ge 2024-01-01T00:00:00Z` |
-| High importance | `is:important` | `importance eq 'high'` |
+## Query failure workflow
 
-## Tips for AI Assistants
-
-1. **Detect provider first**: Check which account the user is using (Gmail or Outlook) before constructing queries
-2. **Simplify for users**: When user says "unread emails from boss", translate to appropriate syntax
-3. **Combine filters**: Users often want multiple conditions - use AND/OR appropriately
-4. **Date handling**: Convert relative dates ("last week", "yesterday") to absolute dates in queries
-5. **Test queries**: If a query fails, try simplifying it or breaking it into parts
+1. Confirm the provider.
+2. Remove syntax from the other provider.
+3. Simplify to one supported criterion.
+4. Add criteria back one at a time.
+5. Preserve `meta.nextToken` pagination only with the exact same query and account.

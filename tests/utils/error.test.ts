@@ -6,10 +6,17 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 
 import {
   CliMailError, AuthError, TokenExpiredError, ApiError,
-  RateLimitError, ConfigError, ProviderError, formatErrorOutput,
+  RateLimitError, ConfigError, ProviderError, errorMessage, formatErrorOutput,
 } from '../../src/utils/error'
 
 describe('Error Utilities', () => {
+  test('errorMessage normalizes Error objects and primitive failures', () => {
+    expect(errorMessage(new Error('failed'))).toBe('failed')
+    expect(errorMessage('failed')).toBe('failed')
+    expect(errorMessage(42)).toBe('42')
+    expect(errorMessage(null)).toBe('null')
+  })
+
   test('CliMailError has code, message and statusCode', () => {
     const err = new CliMailError('test message', 'TEST_CODE', 500)
     expect(err.message).toBe('test message')
@@ -45,6 +52,7 @@ describe('Error Utilities', () => {
     const err = new RateLimitError(5000)
     expect(err.retryAfterMs).toBe(5000)
     expect(err.statusCode).toBe(429)
+    expect(err.code).toBe('RATE_LIMIT_ERROR')
     expect(err instanceof ApiError).toBe(true)
   })
 
@@ -63,27 +71,27 @@ describe('Error Utilities', () => {
     test('formats CliMailError as JSON', () => {
       const err = new ApiError('Not found', 404, { detail: 'missing' })
       const output = JSON.parse(formatErrorOutput(err))
-      expect(output.error).toBe('Not found')
-      expect(output.code).toBe('API_ERROR')
-      expect(output.statusCode).toBe(404)
-      expect(output.details).toEqual({ detail: 'missing' })
+      expect(output.error.message).toBe('Not found')
+      expect(output.error.code).toBe('API_ERROR')
+      expect(output.error.statusCode).toBe(404)
+      expect(output.error.details).toEqual({ detail: 'missing' })
     })
 
     test('formats generic Error', () => {
       const output = JSON.parse(formatErrorOutput(new Error('something broke')))
-      expect(output.error).toBe('something broke')
-      expect(output.code).toBe('UNKNOWN_ERROR')
+      expect(output.error.message).toBe('something broke')
+      expect(output.error.code).toBe('UNKNOWN_ERROR')
     })
 
     test('formats string error', () => {
       const output = JSON.parse(formatErrorOutput('raw string error'))
-      expect(output.error).toBe('raw string error')
-      expect(output.code).toBe('UNKNOWN_ERROR')
+      expect(output.error.message).toBe('raw string error')
+      expect(output.error.code).toBe('UNKNOWN_ERROR')
     })
 
     test('formats null error', () => {
       const output = JSON.parse(formatErrorOutput(null))
-      expect(output.code).toBe('UNKNOWN_ERROR')
+      expect(output.error.code).toBe('UNKNOWN_ERROR')
     })
 
     test('omits statusCode when not present', () => {
@@ -96,6 +104,29 @@ describe('Error Utilities', () => {
       const err = new ApiError('fail', 500)
       const output = JSON.parse(formatErrorOutput(err))
       expect(output.details).toBeUndefined()
+    })
+
+    test('uses an ApiError suggestion attached by a provider', () => {
+      const err = new ApiError(
+        'Provider query failed',
+        400,
+        { error: { code: 'ProviderQueryError' } },
+        'Use the provider-specific query syntax.',
+      )
+      const output = JSON.parse(formatErrorOutput(err))
+      expect(output.error.suggestion).toBe('Use the provider-specific query syntax.')
+    })
+
+    test('does not infer Graph search advice from a shared ApiError message', () => {
+      const err = new ApiError("The query parameter '$orderby' is not supported", 400)
+      const output = JSON.parse(formatErrorOutput(err))
+      expect(output.error.suggestion).toBe('Check the command parameters and try again.')
+    })
+
+    test('suggests reauthentication from the structured code', () => {
+      const err = new CliMailError('Account needs attention', 'ACCOUNT_REAUTH_REQUIRED')
+      const output = JSON.parse(formatErrorOutput(err))
+      expect(output.error.suggestion).toContain('account reauth')
     })
   })
 })

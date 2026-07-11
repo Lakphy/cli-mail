@@ -17,16 +17,21 @@ interface GraphMessageRuleList {
   value: GraphMessageRule[]
 }
 
-export async function listRules(client: HttpClient): Promise<RuleInfo[]> {
+export interface OutlookRuleInfo extends RuleInfo {
+  sequence?: number
+  exceptions?: unknown
+}
+
+export async function listRules(client: HttpClient): Promise<OutlookRuleInfo[]> {
   const list = await client.get<GraphMessageRuleList>(
     '/mailFolders/Inbox/messageRules',
   )
   return (list.value || []).map(normalizeRule)
 }
 
-export async function getRule(client: HttpClient, id: string): Promise<RuleInfo> {
+export async function getRule(client: HttpClient, id: string): Promise<OutlookRuleInfo> {
   const rule = await client.get<GraphMessageRule>(
-    `/mailFolders/Inbox/messageRules/${id}`,
+    `/mailFolders/Inbox/messageRules/${encodeURIComponent(id)}`,
   )
   return normalizeRule(rule)
 }
@@ -34,7 +39,7 @@ export async function getRule(client: HttpClient, id: string): Promise<RuleInfo>
 export async function createRule(
   client: HttpClient,
   ruleJson: unknown,
-): Promise<RuleInfo> {
+): Promise<OutlookRuleInfo> {
   const rule = await client.post<GraphMessageRule>(
     '/mailFolders/Inbox/messageRules',
     ruleJson,
@@ -46,9 +51,9 @@ export async function updateRule(
   client: HttpClient,
   id: string,
   ruleJson: unknown,
-): Promise<RuleInfo> {
+): Promise<OutlookRuleInfo> {
   const rule = await client.patch<GraphMessageRule>(
-    `/mailFolders/Inbox/messageRules/${id}`,
+    `/mailFolders/Inbox/messageRules/${encodeURIComponent(id)}`,
     ruleJson,
   )
   return normalizeRule(rule)
@@ -58,15 +63,17 @@ export async function deleteRule(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/mailFolders/Inbox/messageRules/${id}`)
+  await client.delete(`/mailFolders/Inbox/messageRules/${encodeURIComponent(id)}`)
 }
 
-function normalizeRule(rule: GraphMessageRule): RuleInfo {
+function normalizeRule(rule: GraphMessageRule): OutlookRuleInfo {
   return {
     id: rule.id,
     name: rule.displayName,
     isEnabled: rule.isEnabled,
+    sequence: rule.sequence,
     conditions: rule.conditions,
     actions: rule.actions,
+    exceptions: rule.exceptions,
   }
 }

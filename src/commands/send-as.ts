@@ -1,20 +1,14 @@
 // Send-as alias commands (Gmail-specific)
 
-import { resolveAccount } from './resolve.js'
-import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { requireProvider, resolveAccount } from './resolve.js'
+import { output, outputList } from '../output/formatter.js'
+import { handleError } from '../utils/error.js'
 import * as gmailSettings from '../providers/gmail/settings.js'
-
-function ensureGmail(provider: string): void {
-  if (provider !== 'gmail') {
-    throw new ProviderError('Send-as aliases are only available for Gmail accounts.', provider)
-  }
-}
 
 export async function sendAsList(opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    ensureGmail(account.provider)
+    requireProvider(account, 'gmail', 'Send-as aliases are only available for Gmail accounts.')
     const aliases = await gmailSettings.listSendAs(client)
     outputList(
       aliases.map((a) => ({
@@ -42,40 +36,9 @@ export async function sendAsList(opts: { account?: string }): Promise<void> {
 export async function sendAsGet(email: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    ensureGmail(account.provider)
+    requireProvider(account, 'gmail', 'Send-as aliases are only available for Gmail accounts.')
     const alias = await gmailSettings.getSendAs(client, email)
     output(alias)
-  } catch (error) {
-    handleError(error)
-  }
-}
-
-export async function sendAsCreate(opts: {
-  email: string
-  displayName?: string
-  replyTo?: string
-  account?: string
-}): Promise<void> {
-  try {
-    const { account, client } = resolveAccount(opts.account)
-    ensureGmail(account.provider)
-    const alias = await gmailSettings.createSendAs(client, {
-      sendAsEmail: opts.email,
-      displayName: opts.displayName,
-      replyToAddress: opts.replyTo,
-    })
-    outputSuccess(`Send-as alias created: ${alias.sendAsEmail}`)
-  } catch (error) {
-    handleError(error)
-  }
-}
-
-export async function sendAsDelete(email: string, opts: { account?: string }): Promise<void> {
-  try {
-    const { account, client } = resolveAccount(opts.account)
-    ensureGmail(account.provider)
-    await gmailSettings.deleteSendAs(client, email)
-    outputSuccess(`Send-as alias deleted: ${email}`)
   } catch (error) {
     handleError(error)
   }

@@ -22,7 +22,7 @@ describe('Outlook Drafts Provider', () => {
       '@odata.nextLink': 'next'
     })
     
-    const result = await listDrafts(mockClient, 5)
+    const result = await listDrafts(mockClient, { top: 5 })
     expect(mockClient.get).toHaveBeenCalledWith('/mailFolders/Drafts/messages', expect.objectContaining({
       $top: 5
     }))
@@ -43,7 +43,8 @@ describe('Outlook Drafts Provider', () => {
     expect(mockClient.post).toHaveBeenCalledWith('/messages', {
       subject: 'hello draft',
       toRecipients: [],
-      body: { contentType: 'Text', content: '' }
+      body: { contentType: 'Text', content: '' },
+      importance: 'normal',
     })
     expect(result.id).toBe('new-d')
   })
@@ -54,6 +55,43 @@ describe('Outlook Drafts Provider', () => {
     expect(mockClient.patch).toHaveBeenCalledWith('/messages/d3', expect.objectContaining({
       subject: 'updated sub'
     }))
+  })
+
+  test('updateDraft preserves HTML body type when only content changes', async () => {
+    ;(mockClient.get as Mock).mockResolvedValue({
+      id: 'd-html',
+      body: { contentType: 'HTML', content: '<p>old</p>' },
+    })
+    ;(mockClient.patch as Mock).mockResolvedValue({ id: 'd-html' })
+
+    await updateDraft(mockClient, 'd-html', { body: '<p>new</p>' })
+
+    expect(mockClient.get).toHaveBeenCalledWith('/messages/d-html', { $select: 'body' })
+    expect(mockClient.patch).toHaveBeenCalledWith('/messages/d-html', {
+      body: { contentType: 'HTML', content: '<p>new</p>' },
+    })
+  })
+
+  test('updateDraft preserves body content when only bodyType changes', async () => {
+    ;(mockClient.get as Mock).mockResolvedValue({
+      id: 'd-text',
+      body: { contentType: 'Text', content: 'keep me' },
+    })
+    ;(mockClient.patch as Mock).mockResolvedValue({ id: 'd-text' })
+
+    await updateDraft(mockClient, 'd-text', { bodyType: 'html' })
+
+    expect(mockClient.patch).toHaveBeenCalledWith('/messages/d-text', {
+      body: { contentType: 'HTML', content: 'keep me' },
+    })
+  })
+
+  test('listDrafts follows a validated Graph continuation URL', async () => {
+    const nextLink = 'https://graph.microsoft.com/v1.0/me/mailFolders/Drafts/messages?%24skiptoken=x'
+    ;(mockClient.get as Mock).mockResolvedValue({ value: [] })
+    const result = await listDrafts(mockClient, { pageToken: nextLink })
+    expect(mockClient.get).toHaveBeenCalledWith(nextLink)
+    expect(result.nextPageToken).toBeUndefined()
   })
 
   test('sendDraft calls POST /messages/{id}/send', async () => {

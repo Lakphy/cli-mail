@@ -6,46 +6,36 @@ import type {
   MessageDetail,
   SendMessageOptions,
   ListOptions,
-  EmailAddress,
 } from '../types.js'
-import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
+import { addAttachment, MAX_ATTACHMENT_SIZE } from './attachments.js'
+import {
+  buildGraphMessage,
+  fromGraphAddress,
+  fromGraphAddresses,
+  normalizeMessageSummary,
+  toGraphAddress,
+  type GraphMessage,
+  type GraphMessageList,
+} from './graph.js'
+import { pageMetadata, validateGraphNextLink, type OutlookPageMetadata } from './pagination.js'
+import { ApiError, ProviderError } from '../../utils/error.js'
 
-// --- Microsoft Graph API response types ---
-
-interface GraphEmailAddress {
-  emailAddress: {
-    name?: string
-    address: string
-  }
+export interface OutlookMessagePage extends OutlookPageMetadata {
+  messages: MessageSummary[]
 }
 
-interface GraphMessage {
+export interface OutlookMessageMutationResult {
+  /** Immutable message ID returned by Graph. */
   id: string
-  subject?: string
-  from?: GraphEmailAddress
-  toRecipients?: GraphEmailAddress[]
-  ccRecipients?: GraphEmailAddress[]
-  bccRecipients?: GraphEmailAddress[]
-  receivedDateTime?: string
-  sentDateTime?: string
-  bodyPreview?: string
-  body?: { contentType: string; content: string }
-  isRead?: boolean
-  hasAttachments?: boolean
-  importance?: string
-  conversationId?: string
-  internetMessageId?: string
-  flag?: { flagStatus: string }
-  categories?: string[]
-  parentFolderId?: string
-  internetMessageHeaders?: Array<{ name: string; value: string }>
+  permanentlyDeleted?: boolean
 }
 
-interface GraphMessageList {
-  value: GraphMessage[]
-  '@odata.nextLink'?: string
-  '@odata.count'?: number
+export const attachmentLimits = {
+  maxFileBytes: MAX_ATTACHMENT_SIZE,
+  assertTotalSize(_totalBytes: number): void {
+    // Microsoft Graph applies the 150 MiB limit per attachment, not per message.
+  },
 }
 
 // --- Operations ---
@@ -53,34 +43,52 @@ interface GraphMessageList {
 export async function listMessages(
   client: HttpClient,
   options: ListOptions = {},
-): Promise<{ messages: MessageSummary[]; nextLink?: string }> {
-  const query: Record<string, string | number | boolean | undefined> = {
-    '$top': options.top || 20,
-    '$select': 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,importance,categories,parentFolderId',
-  }
-
-  // Microsoft Graph API does not support $orderby with $search
-  // When searching, we sort client-side instead
-  const isSearch = !!options.query
-  if (!isSearch) {
-    query['$orderby'] = options.orderBy || 'receivedDateTime desc'
-  }
-
-  if (options.skip) {
-    query['$skip'] = options.skip
-  }
-  if (options.query) {
-    query['$search'] = `"${options.query}"`
-  }
-  if (options.filter) {
-    query['$filter'] = options.filter
+): Promise<OutlookMessagePage> {
+  if (options.query && options.filter) {
+    throw new TypeError('Outlook KQL search (--query) and OData filter (--filter) are mutually exclusive')
   }
 
   const path = options.folder
-    ? `/mailFolders/${options.folder}/messages`
+    ? `/mailFolders/${encodeURIComponent(options.folder)}/messages`
     : '/messages'
+  const isSearch = !!options.query
 
-  const list = await client.get<GraphMessageList>(path, query)
+  let list: GraphMessageList
+  if (options.pageToken) {
+    const nextLink = validateGraphNextLink(options.pageToken, path)
+    try {
+      list = await client.get<GraphMessageList>(nextLink)
+    } catch (error) {
+      throw attachSearchSortSuggestion(error, isSearch)
+    }
+  } else {
+    const query: Record<string, string | number | boolean | undefined> = {
+      '$top': options.top ?? 20,
+      '$select': 'id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments,importance,categories,parentFolderId',
+    }
+
+    // Microsoft Graph API does not support $orderby with $search. When
+    // searching, sort the page client-side instead.
+    if (!isSearch) {
+      query['$orderby'] = options.orderBy || 'receivedDateTime desc'
+    }
+
+    if (options.skip !== undefined) {
+      query['$skip'] = options.skip
+    }
+    if (options.query) {
+      query['$search'] = formatKqlSearch(options.query)
+    }
+    if (options.filter) {
+      query['$filter'] = options.filter
+    }
+
+    try {
+      list = await client.get<GraphMessageList>(path, query)
+    } catch (error) {
+      throw attachSearchSortSuggestion(error, isSearch)
+    }
+  }
 
   let messages = (list.value || []).map(normalizeMessageSummary)
 
@@ -95,15 +103,28 @@ export async function listMessages(
 
   return {
     messages,
-    nextLink: list['@odata.nextLink'],
+    ...pageMetadata(list['@odata.nextLink']),
   }
+}
+
+export function listMessagesSince(
+  client: HttpClient,
+  sinceDate: Date,
+  top: number,
+  pageToken?: string,
+): Promise<OutlookMessagePage> {
+  return listMessages(client, {
+    top,
+    filter: `receivedDateTime ge ${sinceDate.toISOString()}`,
+    pageToken,
+  })
 }
 
 export async function getMessage(
   client: HttpClient,
   id: string,
 ): Promise<MessageDetail> {
-  const msg = await client.get<GraphMessage>(`/messages/${id}`, {
+  const msg = await client.get<GraphMessage>(`/messages/${encodeURIComponent(id)}`, {
     '$select': 'id,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,sentDateTime,bodyPreview,body,isRead,hasAttachments,importance,conversationId,internetMessageId,flag,categories,parentFolderId,internetMessageHeaders',
   })
   return normalizeMessageDetail(msg)
@@ -112,76 +133,74 @@ export async function getMessage(
 export async function getMessageRaw(
   client: HttpClient,
   id: string,
-): Promise<string> {
-  const response = await client.getRaw(`/messages/${id}/$value`)
-  return response.text()
+): Promise<Buffer> {
+  const response = await client.getRaw(`/messages/${encodeURIComponent(id)}/$value`)
+  return Buffer.from(await response.arrayBuffer())
 }
 
 export async function sendMessage(
   client: HttpClient,
   options: SendMessageOptions,
 ): Promise<void> {
-  const message: Record<string, unknown> = {
-    subject: options.subject,
-    body: {
-      contentType: options.bodyType === 'html' ? 'HTML' : 'Text',
-      content: options.body,
-    },
-    toRecipients: options.to.map(toGraphAddress),
-    importance: options.importance || 'normal',
-  }
+  const message = buildGraphMessage(options)
 
-  if (options.cc?.length) {
-    message.ccRecipients = options.cc.map(toGraphAddress)
-  }
-  if (options.bcc?.length) {
-    message.bccRecipients = options.bcc.map(toGraphAddress)
-  }
-
-  if (options.attachments && options.attachments.length > 0) {
-    message.attachments = options.attachments.map((a) => {
-      const content = readFileSync(a.path)
-      return {
-        '@odata.type': '#microsoft.graph.fileAttachment',
-        name: a.name || basename(a.path),
-        contentBytes: content.toString('base64'),
-      }
+  if (!options.attachments?.length) {
+    await client.post('/sendMail', {
+      message,
+      saveToSentItems: options.saveToSentItems !== false,
     })
+    return
   }
 
-  await client.post('/sendMail', {
-    message,
-    saveToSentItems: options.saveToSentItems !== false,
-  })
+  if (options.saveToSentItems === false) {
+    throw new TypeError('Outlook cannot send a draft with attachments without saving it to Sent Items')
+  }
+
+  // Graph requires upload sessions for files >= 3 MiB. Creating a draft first
+  // gives both small and large attachments one protocol-correct code path.
+  const draft = await client.post<GraphMessage>('/messages', message)
+  try {
+    for (const attachment of options.attachments) {
+      await addAttachment(
+        client,
+        draft.id,
+        attachment.path,
+        attachment.name || basename(attachment.path),
+      )
+    }
+    await client.post(`/messages/${encodeURIComponent(draft.id)}/send`)
+  } catch (sendError) {
+    try {
+      await client.delete(`/messages/${encodeURIComponent(draft.id)}`)
+    } catch (cleanupError) {
+      // A missing draft means there is no leftover object to clean up. This
+      // can happen when Graph accepted send but the client lost the response.
+      if (cleanupError instanceof ApiError && cleanupError.statusCode === 404) {
+        throw sendError
+      }
+      throw new ProviderError(
+        'Outlook send failed and the temporary draft could not be removed',
+        'outlook',
+        {
+          draftId: draft.id,
+          sendError: safeErrorDetails(sendError),
+          cleanupError: safeErrorDetails(cleanupError),
+        },
+      )
+    }
+    throw sendError
+  }
 }
 
-export async function createMessage(
-  client: HttpClient,
-  options: {
-    subject: string
-    body: string
-    bodyType?: 'text' | 'html'
-    to: string[]
-    cc?: string[]
-    bcc?: string[]
-    importance?: string
-  },
-): Promise<{ id: string }> {
-  const message: Record<string, unknown> = {
-    subject: options.subject,
-    body: {
-      contentType: options.bodyType === 'html' ? 'HTML' : 'Text',
-      content: options.body,
-    },
-    toRecipients: options.to.map(toGraphAddress),
+function safeErrorDetails(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) return { message: String(error) }
+  const coded = error as Error & { code?: unknown; statusCode?: unknown }
+  return {
+    name: error.name,
+    message: error.message,
+    ...(typeof coded.code === 'string' ? { code: coded.code } : {}),
+    ...(typeof coded.statusCode === 'number' ? { statusCode: coded.statusCode } : {}),
   }
-
-  if (options.cc?.length) message.ccRecipients = options.cc.map(toGraphAddress)
-  if (options.bcc?.length) message.bccRecipients = options.bcc.map(toGraphAddress)
-  if (options.importance) message.importance = options.importance
-
-  const result = await client.post<GraphMessage>('/messages', message)
-  return { id: result.id }
 }
 
 export async function replyToMessage(
@@ -191,8 +210,8 @@ export async function replyToMessage(
   replyAll = false,
 ): Promise<void> {
   const endpoint = replyAll
-    ? `/messages/${messageId}/replyAll`
-    : `/messages/${messageId}/reply`
+    ? `/messages/${encodeURIComponent(messageId)}/replyAll`
+    : `/messages/${encodeURIComponent(messageId)}/reply`
 
   await client.post(endpoint, {
     comment: body,
@@ -205,8 +224,8 @@ export async function forwardMessage(
   to: string[],
   body?: string,
 ): Promise<void> {
-  await client.post(`/messages/${messageId}/forward`, {
-    comment: body || '',
+  await client.post(`/messages/${encodeURIComponent(messageId)}/forward`, {
+    comment: body ?? '',
     toRecipients: to.map(toGraphAddress),
   })
 }
@@ -215,25 +234,46 @@ export async function deleteMessage(
   client: HttpClient,
   id: string,
   permanent = false,
-): Promise<void> {
+  outlookUserId?: string,
+): Promise<OutlookMessageMutationResult> {
   if (permanent) {
-    await client.delete(`/messages/${id}`)
-  } else {
-    // Move to DeletedItems
-    await client.post(`/messages/${id}/move`, {
-      destinationId: 'DeletedItems',
-    })
+    const userId = outlookUserId || await getOutlookUserId(client)
+    const path = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(id)}/permanentDelete`
+    await client.post(path)
+    return { id, permanentlyDeleted: true }
   }
+
+  // Move to DeletedItems and surface Graph's response ID. With ImmutableId it
+  // remains stable, but returning it also protects callers during migrations.
+  const result = await client.post<GraphMessage>(`/messages/${encodeURIComponent(id)}/move`, {
+    destinationId: 'DeletedItems',
+  })
+  return { id: result.id }
 }
 
 export async function moveMessage(
   client: HttpClient,
   id: string,
   destinationFolderId: string,
-): Promise<void> {
-  await client.post(`/messages/${id}/move`, {
+): Promise<OutlookMessageMutationResult> {
+  const result = await client.post<GraphMessage>(`/messages/${encodeURIComponent(id)}/move`, {
     destinationId: destinationFolderId,
   })
+  return { id: result.id }
+}
+
+export function trashMessage(
+  client: HttpClient,
+  id: string,
+): Promise<OutlookMessageMutationResult> {
+  return moveMessage(client, id, 'deleteditems')
+}
+
+export function untrashMessage(
+  client: HttpClient,
+  id: string,
+): Promise<OutlookMessageMutationResult> {
+  return moveMessage(client, id, 'Inbox')
 }
 
 export async function copyMessage(
@@ -241,7 +281,7 @@ export async function copyMessage(
   id: string,
   destinationFolderId: string,
 ): Promise<{ id: string }> {
-  const result = await client.post<GraphMessage>(`/messages/${id}/copy`, {
+  const result = await client.post<GraphMessage>(`/messages/${encodeURIComponent(id)}/copy`, {
     destinationId: destinationFolderId,
   })
   return { id: result.id }
@@ -265,7 +305,7 @@ export async function markMessage(
   }
 
   if (Object.keys(updates).length > 0) {
-    await client.patch(`/messages/${id}`, updates)
+    await client.patch(`/messages/${encodeURIComponent(id)}`, updates)
   }
 }
 
@@ -273,40 +313,54 @@ export async function searchMessages(
   client: HttpClient,
   query: string,
   top = 20,
-): Promise<{ messages: MessageSummary[]; nextLink?: string }> {
-  return listMessages(client, { query, top })
+  pageToken?: string,
+): Promise<OutlookMessagePage> {
+  return listMessages(client, { query, top, pageToken })
 }
 
-// --- Helpers ---
-
-function toGraphAddress(addr: string): GraphEmailAddress {
-  return { emailAddress: { address: addr } }
-}
-
-function fromGraphAddress(addr?: GraphEmailAddress): EmailAddress {
-  if (!addr) return { address: '' }
-  return {
-    name: addr.emailAddress.name,
-    address: addr.emailAddress.address,
+function formatKqlSearch(query: string): string {
+  const trimmed = query.trim()
+  if (!trimmed) {
+    throw new TypeError('Outlook KQL search query cannot be empty')
   }
+  return trimmed.startsWith('"') && trimmed.endsWith('"')
+    ? trimmed
+    : `"${trimmed}"`
 }
 
-function fromGraphAddresses(addrs?: GraphEmailAddress[]): EmailAddress[] {
-  return (addrs || []).map(fromGraphAddress)
+const SEARCH_SORT_SUGGESTION =
+  'Search and sorting cannot be combined for this provider. Remove the sort option and retry.'
+
+function attachSearchSortSuggestion(error: unknown, isSearch: boolean): unknown {
+  if (!(error instanceof ApiError) || error.suggestion) return error
+
+  const graphError = `${error.message}\n${JSON.stringify(error.response ?? '')}`.toLowerCase()
+  if (graphError.includes('orderbywithsearch')
+    || (isSearch && (graphError.includes('$orderby') || graphError.includes('orderby')))) {
+    error.suggestion = SEARCH_SORT_SUGGESTION
+  }
+  return error
 }
 
-function normalizeMessageSummary(msg: GraphMessage): MessageSummary {
-  return {
-    id: msg.id,
-    subject: msg.subject || '(no subject)',
-    from: fromGraphAddress(msg.from),
-    to: fromGraphAddresses(msg.toRecipients),
-    date: msg.receivedDateTime || '',
-    snippet: msg.bodyPreview,
-    isRead: msg.isRead ?? false,
-    hasAttachments: msg.hasAttachments ?? false,
-    labels: msg.categories,
-    folder: msg.parentFolderId,
+const outlookUserIds = new WeakMap<HttpClient, Promise<string>>()
+
+async function getOutlookUserId(client: HttpClient): Promise<string> {
+  let pending = outlookUserIds.get(client)
+  if (!pending) {
+    pending = client.get<{ id?: string }>('', { '$select': 'id' }).then((profile) => {
+      if (!profile.id) {
+        throw new TypeError('Microsoft Graph profile response did not contain a user ID')
+      }
+      return profile.id
+    })
+    outlookUserIds.set(client, pending)
+  }
+
+  try {
+    return await pending
+  } catch (error) {
+    outlookUserIds.delete(client)
+    throw error
   }
 }
 

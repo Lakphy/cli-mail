@@ -1,4 +1,3 @@
-import { createCli } from './cli.js'
+import { runCli } from './run.js'
 
-const program = createCli()
-program.parse()
+await runCli()

@@ -8,16 +8,16 @@ import {
   getAccountsByTag,
   listTags,
   validateTag,
-  addAccount,
+  createAccount,
 } from '../src/config/store'
 import { ConfigError } from '../src/utils/error'
-import type { AccountConfig } from '../src/config/types'
+import type { NewAccountConfig } from '../src/config/store'
 
 // ==========================================================
 // Tag / Group Feature Tests
 // ==========================================================
 
-function makeAccount(alias: string, provider: 'gmail' | 'outlook', tag?: string): AccountConfig {
+function makeAccount(alias: string, provider: 'gmail' | 'outlook', tag?: string): NewAccountConfig {
   return {
     alias,
     ...(tag ? { tag } : {}),
@@ -200,16 +200,16 @@ describe('Tag preserved during account operations', () => {
     }
   })
 
-  test('addAccount preserves tag field', () => {
+  test('createAccount preserves tag field', () => {
     const account = makeAccount('tagged-user', 'gmail', 'team-a')
-    addAccount(account)
+    createAccount(account)
     const config = loadConfig()
     expect(config.accounts[0].tag).toBe('team-a')
   })
 
-  test('addAccount without tag has no tag field', () => {
+  test('createAccount without tag has no tag field', () => {
     const account = makeAccount('plain-user', 'gmail')
-    addAccount(account)
+    createAccount(account)
     const config = loadConfig()
     expect(config.accounts[0].tag).toBeUndefined()
   })

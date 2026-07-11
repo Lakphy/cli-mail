@@ -1,49 +1,43 @@
 // Draft commands
 
 import { resolveAccount } from './resolve.js'
-import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError } from '../utils/error.js'
+import { output, outputSuccess } from '../output/formatter.js'
+import { ConfigError, handleError } from '../utils/error.js'
 import * as gmailDrafts from '../providers/gmail/drafts.js'
 import * as outlookDrafts from '../providers/outlook/drafts.js'
+import { decodePageToken, encodePageToken } from '../utils/page-token.js'
+import { outputPageResult } from './shared.js'
 
-export async function draftList(opts: { top?: string; account?: string }): Promise<void> {
+export async function draftList(opts: { top?: string; pageToken?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
     const top = opts.top ? parseInt(opts.top, 10) : 20
+    const pageToken = decodePageToken(opts.pageToken, account, 'draft.list')
 
-    if (account.provider === 'gmail') {
-      const result = await gmailDrafts.listDrafts(client, top)
-      outputList(
-        result.drafts.map((d) => ({
-          id: d.id,
-          subject: d.subject,
-          to: d.to.map((a) => a.address).join(', '),
-          snippet: d.snippet,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'to', label: 'To' },
-          { key: 'snippet', label: 'Snippet' },
-        ],
-      )
-    } else {
-      const result = await outlookDrafts.listDrafts(client, top)
-      outputList(
-        result.drafts.map((d) => ({
-          id: d.id,
-          subject: d.subject,
-          to: d.to.map((a) => a.address).join(', '),
-          snippet: d.snippet,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'to', label: 'To' },
-          { key: 'snippet', label: 'Snippet' },
-        ],
-      )
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailDrafts.listDrafts(client, { top, pageToken })
+      : await outlookDrafts.listDrafts(client, { top, pageToken })
+    const items = result.drafts.map((draft) => ({
+      id: draft.id,
+      subject: draft.subject,
+      to: draft.to.map((address) => address.address).join(', '),
+      snippet: draft.snippet,
+    }))
+    const meta = { nextToken: encodePageToken(account, 'draft.list', result.nextPageToken) }
+    const columns = [
+      { key: 'id', label: 'ID' },
+      { key: 'subject', label: 'Subject' },
+      { key: 'to', label: 'To' },
+      { key: 'snippet', label: 'Snippet' },
+    ]
+    const errors = 'errors' in result ? result.errors : undefined
+    outputPageResult(items, columns, {
+      meta,
+      errors,
+      failCode: 'DRAFT_PAGE_FAILED',
+      failMessage: 'Failed to fetch every draft in this page',
+      itemCode: 'DRAFT_FETCH_FAILED',
+    })
   } catch (error) {
     handleError(error)
   }
@@ -52,13 +46,10 @@ export async function draftList(opts: { top?: string; account?: string }): Promi
 export async function draftGet(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const draft = await gmailDrafts.getDraft(client, id)
-      output(draft)
-    } else {
-      const draft = await outlookDrafts.getDraft(client, id)
-      output(draft)
-    }
+    const draft = account.provider === 'gmail'
+      ? await gmailDrafts.getDraft(client, id)
+      : await outlookDrafts.getDraft(client, id)
+    output(draft)
   } catch (error) {
     handleError(error)
   }
@@ -86,13 +77,10 @@ export async function draftCreate(opts: DraftCreateOpts): Promise<void> {
       bodyType: (opts.bodyType as 'text' | 'html') || 'text',
     }
 
-    if (account.provider === 'gmail') {
-      const result = await gmailDrafts.createDraft(client, createOpts)
-      outputSuccess(`Draft created (id: ${result.id})`)
-    } else {
-      const result = await outlookDrafts.createDraft(client, createOpts)
-      outputSuccess(`Draft created (id: ${result.id})`)
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailDrafts.createDraft(client, createOpts)
+      : await outlookDrafts.createDraft(client, createOpts)
+    outputSuccess(`Draft created (id: ${result.id})`)
   } catch (error) {
     handleError(error)
   }
@@ -110,6 +98,14 @@ interface DraftUpdateOpts {
 
 export async function draftUpdate(id: string, opts: DraftUpdateOpts): Promise<void> {
   try {
+    if (opts.to === undefined
+      && opts.subject === undefined
+      && opts.body === undefined
+      && opts.cc === undefined
+      && opts.bcc === undefined
+      && opts.bodyType === undefined) {
+      throw new ConfigError('Provide at least one draft field to update')
+    }
     const { account, client } = resolveAccount(opts.account)
     const updateOpts = {
       to: opts.to,
@@ -120,13 +116,10 @@ export async function draftUpdate(id: string, opts: DraftUpdateOpts): Promise<vo
       bodyType: opts.bodyType as 'text' | 'html' | undefined,
     }
 
-    if (account.provider === 'gmail') {
-      const result = await gmailDrafts.updateDraft(client, id, updateOpts)
-      outputSuccess(`Draft updated (id: ${result.id})`)
-    } else {
-      const result = await outlookDrafts.updateDraft(client, id, updateOpts)
-      outputSuccess(`Draft updated (id: ${result.id})`)
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailDrafts.updateDraft(client, id, updateOpts)
+      : await outlookDrafts.updateDraft(client, id, updateOpts)
+    outputSuccess(`Draft updated (id: ${result.id})`)
   } catch (error) {
     handleError(error)
   }

@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, vi, type Mock } from 'vitest'
 import { createMockHttpClient } from '../../helpers'
 import {
-  listFolders,
   getFolder,
   createFolder,
   updateFolder,
@@ -9,6 +8,7 @@ import {
   moveFolder,
   copyFolder,
   listFolderMessages,
+  listFoldersPage,
 } from '../../../src/providers/outlook/folders'
 
 describe('Outlook Folders Provider', () => {
@@ -18,21 +18,21 @@ describe('Outlook Folders Provider', () => {
     vi.clearAllMocks()
   })
 
-  test('listFolders calls /mailFolders', async () => {
+  test('listFoldersPage calls /mailFolders', async () => {
     ;(mockClient.get as Mock).mockResolvedValue({
       value: [{ id: 'f1', displayName: 'Inbox', hidden: false, unreadItemCount: 1, totalItemCount: 2 }]
     })
     
-    const result = await listFolders(mockClient)
+    const result = await listFoldersPage(mockClient)
     expect(mockClient.get).toHaveBeenCalledWith('/mailFolders', expect.any(Object))
-    expect(result.length).toBe(1)
-    expect(result[0].id).toBe('f1')
-    expect(result[0].name).toBe('Inbox')
+    expect(result.folders).toHaveLength(1)
+    expect(result.folders[0].id).toBe('f1')
+    expect(result.folders[0].name).toBe('Inbox')
   })
 
-  test('listFolders with parentId uses childFolders', async () => {
+  test('listFoldersPage with parentId uses childFolders', async () => {
     ;(mockClient.get as Mock).mockResolvedValue({ value: [] })
-    await listFolders(mockClient, 'parent1')
+    await listFoldersPage(mockClient, { parentId: 'parent1' })
     expect(mockClient.get).toHaveBeenCalledWith('/mailFolders/parent1/childFolders', expect.any(Object))
   })
 
@@ -78,8 +78,23 @@ describe('Outlook Folders Provider', () => {
 
   test('listFolderMessages calls /mailFolders/{id}/messages', async () => {
     ;(mockClient.get as Mock).mockResolvedValue({ value: [{ id: 'm1' }] })
-    const result = await listFolderMessages(mockClient, 'f1', 5)
+    const result = await listFolderMessages(mockClient, 'f1', { top: 5 })
     expect(mockClient.get).toHaveBeenCalledWith('/mailFolders/f1/messages', expect.objectContaining({ $top: 5 }))
     expect(result.messages.length).toBe(1)
+  })
+
+  test('listFoldersPage surfaces and follows pagination cursors', async () => {
+    const firstNext = 'https://graph.microsoft.com/v1.0/me/mailFolders?%24skiptoken=one'
+    ;(mockClient.get as Mock).mockResolvedValueOnce({
+      value: [{ id: 'f1', displayName: 'Inbox' }],
+      '@odata.nextLink': firstNext,
+    })
+
+    const first = await listFoldersPage(mockClient, { top: 10 })
+    expect(first.nextPageToken).toBe(firstNext)
+
+    ;(mockClient.get as Mock).mockResolvedValueOnce({ value: [] })
+    await listFoldersPage(mockClient, { pageToken: firstNext })
+    expect(mockClient.get).toHaveBeenLastCalledWith(firstNext)
   })
 })

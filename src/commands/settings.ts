@@ -1,17 +1,27 @@
 // Settings commands
 
-import { resolveAccount } from './resolve.js'
-import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { requireProvider, resolveAccount } from './resolve.js'
+import { output, outputList, outputPartial, outputSuccess } from '../output/formatter.js'
+import { ConfigError, handleError } from '../utils/error.js'
 import * as gmailSettings from '../providers/gmail/settings.js'
 import * as outlookSettings from '../providers/outlook/settings.js'
+import { parseJsonObject } from '../utils/input.js'
 
 export async function settingsGet(opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
     if (account.provider === 'gmail') {
-      const settings = await gmailSettings.getSettings(client)
-      output(settings)
+      const result = await gmailSettings.getSettings(client)
+      if (result.errors.length > 0) {
+        outputPartial(result.settings, result.errors.map((error) => ({
+          code: error.code,
+          message: error.message,
+          item: { section: error.section },
+          ...(error.statusCode !== undefined ? { details: { statusCode: error.statusCode } } : {}),
+        })))
+      } else {
+        output(result.settings)
+      }
     } else {
       const settings = await outlookSettings.getSettings(client)
       output(settings)
@@ -24,11 +34,23 @@ export async function settingsGet(opts: { account?: string }): Promise<void> {
 export async function settingsUpdate(opts: { json: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const settingsJson = JSON.parse(opts.json)
+    const settingsJson = parseJsonObject(opts.json, 'Settings')
 
     if (account.provider === 'gmail') {
-      await gmailSettings.updateSettings(client, settingsJson)
-      outputSuccess('Settings updated')
+      const result = await gmailSettings.updateSettings(client, settingsJson)
+      if (result.errors.length > 0) {
+        outputPartial(
+          { updated: result.updated },
+          result.errors.map((error) => ({
+            code: error.code,
+            message: error.message,
+            item: { section: error.section },
+            ...(error.statusCode !== undefined ? { details: { statusCode: error.statusCode } } : {}),
+          })),
+        )
+      } else {
+        outputSuccess('Settings updated')
+      }
     } else {
       const result = await outlookSettings.updateSettings(client, settingsJson)
       output(result)
@@ -61,14 +83,17 @@ export async function vacationSet(opts: {
   account?: string
 }): Promise<void> {
   try {
+    const start = parseOptionalDate(opts.start, '--start')
+    const end = parseOptionalDate(opts.end, '--end')
+    if (start && end && end <= start) throw new ConfigError('--end must be later than --start')
     const { account, client } = resolveAccount(opts.account)
 
     if (account.provider === 'gmail') {
       await gmailSettings.setVacation(client, {
-        enableAutoReply: opts.enabled,
-        responseBodyPlainText: opts.message,
-        startTime: opts.start ? String(new Date(opts.start).getTime()) : undefined,
-        endTime: opts.end ? String(new Date(opts.end).getTime()) : undefined,
+        enabled: opts.enabled,
+        message: opts.message,
+        start,
+        end,
       })
     } else {
       await outlookSettings.setAutoReply(client, {
@@ -85,28 +110,22 @@ export async function vacationSet(opts: {
   }
 }
 
-export async function autoReplyGet(opts: { account?: string }): Promise<void> {
-  try {
-    const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const vacation = await gmailSettings.getVacation(client)
-      output(vacation)
-    } else {
-      const autoReply = await outlookSettings.getAutoReply(client)
-      output(autoReply)
-    }
-  } catch (error) {
-    handleError(error)
-  }
+function parseOptionalDate(value: string | undefined, option: string): Date | undefined {
+  if (!value) return undefined
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) throw new ConfigError(`${option} must be a valid ISO 8601 date`)
+  return date
 }
+
+export const autoReplyGet = vacationGet
 
 export async function autoReplySet(opts: { json: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const settingsJson = JSON.parse(opts.json)
+    const settingsJson = parseJsonObject(opts.json, 'Auto-reply settings')
 
     if (account.provider === 'gmail') {
-      await gmailSettings.setVacation(client, settingsJson)
+      await gmailSettings.updateSettings(client, { vacation: settingsJson })
     } else {
       await outlookSettings.setAutoReply(client, settingsJson)
     }
@@ -131,32 +150,13 @@ export async function forwardingGet(opts: { account?: string }): Promise<void> {
   }
 }
 
-export async function forwardingSet(opts: { json: string; account?: string }): Promise<void> {
-  try {
-    const { account, client } = resolveAccount(opts.account)
-    const settingsJson = JSON.parse(opts.json)
-
-    if (account.provider === 'gmail') {
-      await gmailSettings.setAutoForwarding(client, settingsJson)
-      outputSuccess('Forwarding settings updated')
-    } else {
-      output({ message: 'Outlook forwarding must be configured via message rules. Use: cli-mail rule create' })
-    }
-  } catch (error) {
-    handleError(error)
-  }
-}
-
 // Mail tips (Outlook-specific)
 export async function mailTipsGet(opts: { addresses: string[]; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'outlook') {
-      const tips = await outlookSettings.getMailTips(client, opts.addresses)
-      output(tips)
-    } else {
-      output({ message: 'Mail tips are only available for Outlook accounts' })
-    }
+    requireProvider(account, 'outlook', 'Mail tips are only available for Outlook accounts')
+    const tips = await outlookSettings.getMailTips(client, opts.addresses)
+    output(tips)
   } catch (error) {
     handleError(error)
   }
@@ -166,9 +166,7 @@ export async function mailTipsGet(opts: { addresses: string[]; account?: string 
 export async function focusedInboxList(opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Focused Inbox is only available for Outlook accounts', account.provider)
-    }
+    requireProvider(account, 'outlook', 'Focused Inbox is only available for Outlook accounts')
     const overrides = await outlookSettings.listFocusedInboxOverrides(client)
     outputList(
       overrides.map((o) => ({
@@ -194,9 +192,7 @@ export async function focusedInboxAdd(opts: {
 }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Focused Inbox is only available for Outlook accounts', account.provider)
-    }
+    requireProvider(account, 'outlook', 'Focused Inbox is only available for Outlook accounts')
     const classify = opts.classify === 'focused' ? 'focused' : 'other'
     const override = await outlookSettings.createFocusedInboxOverride(client, opts.email, classify)
     outputSuccess(`Focused Inbox override created: ${override.senderEmailAddress.address} → ${override.classifyAs} (id: ${override.id})`)
@@ -208,9 +204,7 @@ export async function focusedInboxAdd(opts: {
 export async function focusedInboxDelete(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Focused Inbox is only available for Outlook accounts', account.provider)
-    }
+    requireProvider(account, 'outlook', 'Focused Inbox is only available for Outlook accounts')
     await outlookSettings.deleteFocusedInboxOverride(client, id)
     outputSuccess(`Focused Inbox override deleted: ${id}`)
   } catch (error) {

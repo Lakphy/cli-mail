@@ -1,11 +1,11 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { accountList, accountInfo, accountSwitch } from '../../src/commands/account'
-import { loadConfig, saveConfig, getAccount, setDefaultAccount } from '../../src/config/store'
+import { accountList, accountInfo, accountSwitch, accountValidate } from '../../src/commands/account'
+import { loadConfig, getAccountsByTag, getAccount, setDefaultAccount } from '../../src/config/store'
 import * as formatterModule from '../../src/output/formatter'
 
 vi.mock('../../src/config/store', () => ({
   loadConfig: vi.fn(),
-  saveConfig: vi.fn(),
+  getAccountsByTag: vi.fn(),
   getAccount: vi.fn(),
   setDefaultAccount: vi.fn(),
 }))
@@ -13,7 +13,6 @@ vi.mock('../../src/output/formatter', () => ({
   outputList: vi.fn(),
   output: vi.fn(),
   outputSuccess: vi.fn(),
-  getGlobalFormat: vi.fn().mockReturnValue('markdown'),
 }))
 vi.mock('../../src/utils/error', () => ({
   handleError: vi.fn()
@@ -21,10 +20,16 @@ vi.mock('../../src/utils/error', () => ({
 
 describe('Account Command Handlers', () => {
   const dummyConfig = {
-    default_account: 'test1',
+    defaultAccountId: 'account-1',
     accounts: [
-      { provider: 'gmail', alias: 'test1', client_id: 'x' },
-      { provider: 'outlook', alias: 'test2', client_id: 'y' }
+      {
+        id: 'account-1', provider: 'gmail', alias: 'test1', email: 'test1@example.com',
+        client_id: 'x', status: 'active', scopes: [], tokens: { expires_at: Date.now() + 60_000 },
+      },
+      {
+        id: 'account-2', provider: 'outlook', alias: 'test2', email: 'test2@example.com',
+        client_id: 'y', status: 'active', scopes: [], tokens: { expires_at: Date.now() + 60_000 },
+      }
     ]
   }
 
@@ -43,6 +48,27 @@ describe('Account Command Handlers', () => {
     expect(outputArg.length).toBe(2)
     expect(outputArg[0].alias).toContain('test1') // default might have a star
     expect(outputArg[0].provider).toBe('gmail')
+  })
+
+  test('accountList filters with the config already loaded', async () => {
+    vi.mocked(getAccountsByTag).mockReturnValue([dummyConfig.accounts[1]] as any)
+    await accountList({ tag: 'work' })
+    expect(loadConfig).toHaveBeenCalledTimes(1)
+    expect(getAccountsByTag).toHaveBeenCalledWith('work', dummyConfig)
+    const outputArg = vi.mocked(formatterModule.outputList).mock.calls[0][0]
+    expect(outputArg.map((account) => account.alias)).toEqual(['test2'])
+  })
+
+  test('accountValidate selects an alias from its single config load', async () => {
+    await accountValidate('test2')
+    expect(loadConfig).toHaveBeenCalledTimes(1)
+    expect(getAccount).not.toHaveBeenCalled()
+    expect(formatterModule.output).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accounts: [expect.objectContaining({ alias: 'test2' })],
+      }),
+      { warnings: [] },
+    )
   })
 
   test('accountInfo retrieves specific account', async () => {
@@ -65,6 +91,9 @@ describe('Account Command Handlers', () => {
     vi.mocked(setDefaultAccount).mockImplementation(() => {})
     await accountSwitch('test2')
     expect(setDefaultAccount).toHaveBeenCalledWith('test2')
-    expect(formatterModule.outputSuccess).toHaveBeenCalledWith(expect.stringContaining('test2'))
+    expect(formatterModule.outputSuccess).toHaveBeenCalledWith(
+      expect.stringContaining('test2'),
+      expect.objectContaining({ alias: 'test2' }),
+    )
   })
 })

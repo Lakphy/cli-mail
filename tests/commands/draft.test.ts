@@ -33,7 +33,7 @@ describe('Draft Command Handlers', () => {
     vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: { provider: 'gmail' } as any, client: dummyClient })
     vi.mocked(gmailDrafts.listDrafts).mockResolvedValue({ drafts: [] })
     await draftList({ top: '10' })
-    expect(gmailDrafts.listDrafts).toHaveBeenCalledWith(dummyClient, 10)
+    expect(gmailDrafts.listDrafts).toHaveBeenCalledWith(dummyClient, { top: 10, pageToken: undefined })
     expect(formatterModule.outputList).toHaveBeenCalled()
   })
 

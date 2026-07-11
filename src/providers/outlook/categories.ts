@@ -39,7 +39,7 @@ export async function updateCategory(
   if (color) updates.color = color
 
   return client.patch<OutlookCategory>(
-    `/outlook/masterCategories/${id}`,
+    `/outlook/masterCategories/${encodeURIComponent(id)}`,
     updates,
   )
 }
@@ -48,5 +48,5 @@ export async function deleteCategory(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/outlook/masterCategories/${id}`)
+  await client.delete(`/outlook/masterCategories/${encodeURIComponent(id)}`)
 }

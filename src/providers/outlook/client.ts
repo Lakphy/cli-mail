@@ -12,6 +12,12 @@ export function createOutlookClient(account: AccountConfig): HttpClient {
   return new HttpClient({
     baseUrl: GRAPH_BASE_URL,
     accountAlias: account.alias,
+    // Outlook item IDs otherwise change when a message is moved. This header
+    // must be present on every request that returns or consumes an item ID.
+    defaultHeaders: {
+      Prefer: 'IdType="ImmutableId"',
+    },
+    allowedUnauthenticatedHosts: ['outlook.office.com'],
     getTokens: () => currentTokens,
     refreshTokens: async (): Promise<OAuthTokens> => {
       const newTokens = await refreshAccessToken({

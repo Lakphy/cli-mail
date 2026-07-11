@@ -1,10 +1,11 @@
 // Rule/Filter commands
 
-import { resolveAccount } from './resolve.js'
+import { requireCapability, requireProvider, resolveAccount } from './resolve.js'
 import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import { CliMailError, handleError, ProviderError } from '../utils/error.js'
 import * as gmailFilters from '../providers/gmail/filters.js'
 import * as outlookRules from '../providers/outlook/rules.js'
+import { parseJsonObject } from '../utils/input.js'
 
 export async function ruleList(opts: { account?: string }): Promise<void> {
   try {
@@ -15,8 +16,8 @@ export async function ruleList(opts: { account?: string }): Promise<void> {
       outputList(
         filters.map((f) => ({
           id: f.id,
-          conditions: JSON.stringify(f.conditions),
-          actions: JSON.stringify(f.actions),
+          conditions: f.conditions,
+          actions: f.actions,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -30,9 +31,9 @@ export async function ruleList(opts: { account?: string }): Promise<void> {
         rules.map((r) => ({
           id: r.id,
           name: r.name || '',
-          enabled: r.isEnabled ? 'yes' : 'no',
-          conditions: JSON.stringify(r.conditions),
-          actions: JSON.stringify(r.actions),
+          enabled: r.isEnabled ?? false,
+          conditions: r.conditions,
+          actions: r.actions,
         })),
         [
           { key: 'id', label: 'ID' },
@@ -51,22 +52,21 @@ export async function ruleList(opts: { account?: string }): Promise<void> {
 export async function ruleGet(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const filter = await gmailFilters.getFilter(client, id)
-      output(filter)
-    } else {
-      const rule = await outlookRules.getRule(client, id)
-      output(rule)
-    }
+    const rule = account.provider === 'gmail'
+      ? await gmailFilters.getFilter(client, id)
+      : await outlookRules.getRule(client, id)
+    output(rule)
   } catch (error) {
     handleError(error)
   }
 }
 
-export async function ruleCreate(opts: { json: string; account?: string }): Promise<void> {
+export async function ruleCreate(opts: { json: string; yes?: boolean; account?: string }): Promise<void> {
   try {
+    const ruleJson = parseJsonObject(opts.json, 'Rule definition')
+    requirePermanentDeleteConfirmation(ruleJson, opts.yes)
     const { account, client } = resolveAccount(opts.account)
-    const ruleJson = JSON.parse(opts.json)
+    requirePermanentDeleteCapability(ruleJson, account)
 
     if (account.provider === 'gmail') {
       const filter = await gmailFilters.createFilter(client, ruleJson)
@@ -80,10 +80,12 @@ export async function ruleCreate(opts: { json: string; account?: string }): Prom
   }
 }
 
-export async function ruleUpdate(id: string, opts: { json: string; account?: string }): Promise<void> {
+export async function ruleUpdate(id: string, opts: { json: string; yes?: boolean; account?: string }): Promise<void> {
   try {
+    const ruleJson = parseJsonObject(opts.json, 'Rule update')
+    requirePermanentDeleteConfirmation(ruleJson, opts.yes)
     const { account, client } = resolveAccount(opts.account)
-    const ruleJson = JSON.parse(opts.json)
+    requirePermanentDeleteCapability(ruleJson, account)
 
     if (account.provider === 'gmail') {
       // Gmail filters can't be updated, only deleted and recreated
@@ -95,6 +97,36 @@ export async function ruleUpdate(id: string, opts: { json: string; account?: str
   } catch (error) {
     handleError(error)
   }
+}
+
+function requestsPermanentDelete(rule: Record<string, unknown>): boolean {
+  const actions = rule.actions
+  return actions !== null
+    && typeof actions === 'object'
+    && !Array.isArray(actions)
+    && (actions as Record<string, unknown>).permanentDelete === true
+}
+
+function requirePermanentDeleteConfirmation(rule: Record<string, unknown>, confirmed?: boolean): void {
+  if (requestsPermanentDelete(rule) && !confirmed) {
+    throw new CliMailError(
+      'Rules with actions.permanentDelete=true require explicit --yes confirmation',
+      'CONFIRMATION_REQUIRED',
+    )
+  }
+}
+
+function requirePermanentDeleteCapability(
+  rule: Record<string, unknown>,
+  account: Parameters<typeof requireCapability>[0],
+): void {
+  if (!requestsPermanentDelete(rule)) return
+  requireProvider(account, 'outlook', 'Permanent-delete rules are only supported by Outlook')
+  requireCapability(
+    account,
+    'mail.permanentDelete',
+    'This account is not authorized to create permanent-delete rules',
+  )
 }
 
 export async function ruleDelete(id: string, opts: { account?: string }): Promise<void> {

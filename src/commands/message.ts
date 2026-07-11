@@ -1,12 +1,35 @@
-import { resolveAccount } from './resolve.js'
-import { output, outputList, outputSuccess, outputRaw } from '../output/formatter.js'
-import { handleError, ProviderError } from '../utils/error.js'
+import {
+  createClientForAccount,
+  requireCapability,
+  requireProvider,
+  resolveAccount,
+} from './resolve.js'
+import { output, outputList, outputPartial, outputSuccess, outputRaw } from '../output/formatter.js'
+import {
+  CliMailError,
+  ConfigError,
+  errorMessage,
+  handleError,
+  ProviderError,
+} from '../utils/error.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
+import * as gmailSettings from '../providers/gmail/settings.js'
 import * as outlookMessages from '../providers/outlook/messages.js'
 import { loadConfig, getAccountsByTag } from '../config/store.js'
-import { createGmailClient } from '../providers/gmail/client.js'
-import { createOutlookClient } from '../providers/outlook/client.js'
-import { readFileSync } from 'node:fs'
+import pLimit from 'p-limit'
+import type { AccountConfig } from '../config/types.js'
+import type { MessageSummary } from '../providers/types.js'
+import { decodePageToken, decodePageTokenState, encodePageToken, type PageTokenContext } from '../utils/page-token.js'
+import { getRegularFileSize, readRegularFile } from '../utils/files.js'
+import {
+  messageListColumns,
+  messageRows,
+  messageSearchColumns,
+  outputPageResult,
+} from './shared.js'
+
+const MAX_BODY_FILE_BYTES = 10 * 1024 * 1024
+const MAX_RAW_MESSAGE_BYTES = 35 * 1024 * 1024
 
 interface MessageListOpts {
   folder?: string
@@ -20,54 +43,19 @@ interface MessageListOpts {
 export async function messageList(opts: MessageListOpts): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
+    const pageToken = decodePageToken(opts.pageToken, account, 'message.list')
     const options = {
       folder: opts.folder,
       query: opts.query,
       top: opts.top ? parseInt(opts.top, 10) : 20,
       skip: opts.skip ? parseInt(opts.skip, 10) : undefined,
+      pageToken,
     }
 
-    if (account.provider === 'gmail') {
-      const result = await gmailMessages.listMessages(client, options)
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-          attachments: m.hasAttachments,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-          { key: 'attachments', label: 'Attachments' },
-        ],
-      )
-    } else {
-      const result = await outlookMessages.listMessages(client, options)
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-          attachments: m.hasAttachments,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-          { key: 'attachments', label: 'Attachments' },
-        ],
-      )
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailMessages.listMessages(client, options)
+      : await outlookMessages.listMessages(client, options)
+    outputMessagePage(account, 'message.list', result)
   } catch (error) {
     handleError(error)
   }
@@ -76,13 +64,10 @@ export async function messageList(opts: MessageListOpts): Promise<void> {
 export async function messageGet(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const msg = await gmailMessages.getMessage(client, id)
-      output(msg)
-    } else {
-      const msg = await outlookMessages.getMessage(client, id)
-      output(msg)
-    }
+    const message = account.provider === 'gmail'
+      ? await gmailMessages.getMessage(client, id)
+      : await outlookMessages.getMessage(client, id)
+    output(message)
   } catch (error) {
     handleError(error)
   }
@@ -91,13 +76,10 @@ export async function messageGet(id: string, opts: { account?: string }): Promis
 export async function messageRaw(id: string, opts: { account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider === 'gmail') {
-      const raw = await gmailMessages.getMessageRaw(client, id)
-      outputRaw(raw)
-    } else {
-      const raw = await outlookMessages.getMessageRaw(client, id)
-      outputRaw(raw)
-    }
+    const raw = account.provider === 'gmail'
+      ? await gmailMessages.getMessageRaw(client, id)
+      : await outlookMessages.getMessageRaw(client, id)
+    outputRaw(raw)
   } catch (error) {
     handleError(error)
   }
@@ -118,15 +100,28 @@ interface MessageSendOpts {
 
 export async function messageSend(opts: MessageSendOpts): Promise<void> {
   try {
+    if (opts.body !== undefined && opts.bodyFile !== undefined) {
+      throw new ConfigError('Use either --body or --body-file, not both')
+    }
     const { account, client } = resolveAccount(opts.account)
 
     let body = opts.body || ''
     if (opts.bodyFile) {
-      body = readFileSync(opts.bodyFile, 'utf-8')
+      body = readUtf8BodyFile(opts.bodyFile)
     }
-    if (!body) {
-      body = ''
-    }
+
+    const attachmentPolicy = account.provider === 'gmail'
+      ? gmailMessages.attachmentLimits
+      : outlookMessages.attachmentLimits
+    const attachmentBytes = (opts.attach ?? []).reduce(
+      (total, path) => total + getRegularFileSize(
+        path,
+        'Attachment',
+        attachmentPolicy.maxFileBytes,
+      ),
+      0,
+    )
+    attachmentPolicy.assertTotalSize(attachmentBytes)
 
     const sendOpts = {
       to: opts.to,
@@ -158,8 +153,19 @@ export async function messageReply(
   try {
     const { account, client } = resolveAccount(opts.account)
     if (account.provider === 'gmail') {
-      const result = await gmailMessages.replyToMessage(client, id, opts.body, opts.replyAll)
-      outputSuccess(`Reply sent (id: ${result.id})`)
+      const [aliases, original] = await Promise.all([
+        gmailSettings.getSendAsAliases(client),
+        gmailMessages.getMessage(client, id),
+      ])
+      const result = await gmailMessages.replyToMessage(
+        client,
+        id,
+        opts.body,
+        opts.replyAll,
+        { email: account.email, aliases },
+        original,
+      )
+      outputSuccess(`Reply sent (id: ${result.id})`, { id: result.id, threadId: result.threadId })
     } else {
       await outlookMessages.replyToMessage(client, id, opts.body, opts.replyAll)
       outputSuccess('Reply sent')
@@ -193,12 +199,20 @@ export async function messageDelete(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
+    if (opts.permanent) requireCapability(account, 'mail.permanentDelete')
     if (account.provider === 'gmail') {
       await gmailMessages.deleteMessage(client, id, opts.permanent)
+      outputSuccess(
+        opts.permanent ? `Message permanently deleted: ${id}` : `Message moved to trash: ${id}`,
+        { id, permanent: opts.permanent === true },
+      )
     } else {
-      await outlookMessages.deleteMessage(client, id, opts.permanent)
+      const result = await outlookMessages.deleteMessage(client, id, opts.permanent)
+      outputSuccess(
+        opts.permanent ? `Message permanently deleted: ${id}` : `Message moved to Deleted Items: ${result.id}`,
+        { id: result.id, permanent: result.permanentlyDeleted === true },
+      )
     }
-    outputSuccess(`Message deleted: ${id}`)
   } catch (error) {
     handleError(error)
   }
@@ -210,13 +224,18 @@ export async function messageMove(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
+    let movedId = id
     if (account.provider === 'gmail') {
       // Gmail: add target label, remove INBOX
-      await gmailMessages.moveMessage(client, id, [opts.toFolder], ['INBOX'])
+      await gmailMessages.moveMessage(client, id, opts.toFolder)
     } else {
-      await outlookMessages.moveMessage(client, id, opts.toFolder)
+      const result = await outlookMessages.moveMessage(client, id, opts.toFolder)
+      movedId = result.id
     }
-    outputSuccess(`Message moved to: ${opts.toFolder}`)
+    outputSuccess(`Message moved to: ${opts.toFolder}`, {
+      id: movedId,
+      folderId: opts.toFolder,
+    })
   } catch (error) {
     handleError(error)
   }
@@ -227,6 +246,13 @@ export async function messageMark(
   opts: { read?: boolean; unread?: boolean; flagged?: boolean; unflagged?: boolean; account?: string },
 ): Promise<void> {
   try {
+    if (opts.read && opts.unread) throw new ConfigError('--read and --unread are mutually exclusive')
+    if (opts.flagged && opts.unflagged) {
+      throw new ConfigError('--flagged and --unflagged are mutually exclusive')
+    }
+    if (!opts.read && !opts.unread && !opts.flagged && !opts.unflagged) {
+      throw new ConfigError('Select at least one mark operation')
+    }
     const { account, client } = resolveAccount(opts.account)
     const markOpts = {
       read: opts.read ? true : opts.unread ? false : undefined,
@@ -245,49 +271,17 @@ export async function messageMark(
 }
 
 export async function messageSearch(
-  opts: { query: string; top?: string; account?: string },
+  opts: { query: string; top?: string; pageToken?: string; account?: string },
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
     const top = opts.top ? parseInt(opts.top, 10) : 20
+    const pageToken = decodePageToken(opts.pageToken, account, 'message.search')
 
-    if (account.provider === 'gmail') {
-      const result = await gmailMessages.searchMessages(client, opts.query, top)
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          snippet: m.snippet,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'snippet', label: 'Snippet' },
-        ],
-      )
-    } else {
-      const result = await outlookMessages.searchMessages(client, opts.query, top)
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          snippet: m.snippet,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'snippet', label: 'Snippet' },
-        ],
-      )
-    }
+    const result = account.provider === 'gmail'
+      ? await gmailMessages.searchMessages(client, opts.query, top, pageToken)
+      : await outlookMessages.searchMessages(client, opts.query, top, pageToken)
+    outputMessagePage(account, 'message.search', result, true)
   } catch (error) {
     handleError(error)
   }
@@ -303,8 +297,7 @@ export async function messageUntrash(
       await gmailMessages.untrashMessage(client, id)
       outputSuccess(`Message untrashed: ${id}`)
     } else {
-      // Outlook: move back to Inbox from DeletedItems
-      await outlookMessages.moveMessage(client, id, 'Inbox')
+      await outlookMessages.untrashMessage(client, id)
       outputSuccess(`Message restored to Inbox: ${id}`)
     }
   } catch (error) {
@@ -313,19 +306,41 @@ export async function messageUntrash(
 }
 
 export async function messageBatchDelete(
-  opts: { ids: string[]; account?: string },
+  opts: { ids: string[]; permanent?: boolean; account?: string },
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
+    if (opts.permanent) requireCapability(account, 'mail.permanentDelete')
     if (account.provider === 'gmail') {
-      await gmailMessages.batchDeleteMessages(client, opts.ids)
-      outputSuccess(`Batch deleted ${opts.ids.length} messages`)
+      await gmailMessages.batchDeleteMessages(client, opts.ids, opts.permanent)
+      outputSuccess(
+        opts.permanent
+          ? `Permanently deleted ${opts.ids.length} messages`
+          : `Moved ${opts.ids.length} messages to trash`,
+        { ids: opts.ids, permanent: opts.permanent === true },
+      )
     } else {
-      // Outlook: delete one by one
-      for (const id of opts.ids) {
-        await outlookMessages.deleteMessage(client, id, false)
+      const limit = pLimit(4)
+      const results = await Promise.allSettled(
+        opts.ids.map((id) => limit(() => outlookMessages.deleteMessage(client, id, opts.permanent))),
+      )
+      const deleted = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+      const errors = results.flatMap((result, index) => result.status === 'rejected'
+        ? [{ code: 'DELETE_FAILED', message: errorMessage(result.reason), item: { id: opts.ids[index] } }]
+        : [])
+      if (errors.length > 0) {
+        if (deleted.length === 0) {
+          throw new CliMailError('All message deletions failed', 'BATCH_DELETE_FAILED', undefined, errors)
+        }
+        outputPartial({ deleted, permanent: opts.permanent === true }, errors)
+        return
       }
-      outputSuccess(`Deleted ${opts.ids.length} messages`)
+      outputSuccess(
+        opts.permanent
+          ? `Permanently deleted ${deleted.length} messages`
+          : `Moved ${deleted.length} messages to Deleted Items`,
+        { deleted, permanent: opts.permanent === true },
+      )
     }
   } catch (error) {
     handleError(error)
@@ -337,10 +352,8 @@ export async function messageImport(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'gmail') {
-      throw new ProviderError('Message import is only supported for Gmail accounts', account.provider)
-    }
-    const rawMime = readFileSync(opts.file, 'utf-8')
+    requireProvider(account, 'gmail', 'Message import is only supported for Gmail accounts')
+    const rawMime = readRegularFile(opts.file, 'Raw MIME file', MAX_RAW_MESSAGE_BYTES)
     const result = await gmailMessages.importMessage(client, rawMime)
     outputSuccess(`Message imported (id: ${result.id})`)
   } catch (error) {
@@ -354,9 +367,11 @@ export async function messageCopy(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'outlook') {
-      throw new ProviderError('Message copy is only supported for Outlook accounts. Gmail uses labels instead.', account.provider)
-    }
+    requireProvider(
+      account,
+      'outlook',
+      'Message copy is only supported for Outlook accounts. Gmail uses labels instead.',
+    )
     const result = await outlookMessages.copyMessage(client, id, opts.toFolder)
     outputSuccess(`Message copied (new id: ${result.id})`)
   } catch (error) {
@@ -374,8 +389,7 @@ export async function messageTrash(
       await gmailMessages.trashMessage(client, id)
       outputSuccess(`Message moved to trash: ${id}`)
     } else {
-      // Outlook: move to DeletedItems
-      await outlookMessages.moveMessage(client, id, 'deleteditems')
+      await outlookMessages.trashMessage(client, id)
       outputSuccess(`Message moved to Deleted Items: ${id}`)
     }
   } catch (error) {
@@ -387,10 +401,11 @@ export async function messageBatchModify(
   opts: { ids: string[]; addLabels?: string[]; removeLabels?: string[]; account?: string },
 ): Promise<void> {
   try {
-    const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'gmail') {
-      throw new ProviderError('Batch modify is only supported for Gmail accounts.', account.provider)
+    if (!opts.addLabels?.length && !opts.removeLabels?.length) {
+      throw new ConfigError('Provide --add-labels or --remove-labels')
     }
+    const { account, client } = resolveAccount(opts.account)
+    requireProvider(account, 'gmail', 'Batch modify is only supported for Gmail accounts.')
     await gmailMessages.batchModifyMessages(client, opts.ids, opts.addLabels, opts.removeLabels)
     outputSuccess(`Batch modified ${opts.ids.length} messages`)
   } catch (error) {
@@ -403,10 +418,8 @@ export async function messageInsert(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    if (account.provider !== 'gmail') {
-      throw new ProviderError('Message insert is only supported for Gmail accounts.', account.provider)
-    }
-    const rawMime = readFileSync(opts.file, 'utf-8')
+    requireProvider(account, 'gmail', 'Message insert is only supported for Gmail accounts.')
+    const rawMime = readRegularFile(opts.file, 'Raw MIME file', MAX_RAW_MESSAGE_BYTES)
     const result = await gmailMessages.insertMessage(client, rawMime)
     outputSuccess(`Message inserted (id: ${result.id})`)
   } catch (error) {
@@ -417,73 +430,26 @@ export async function messageInsert(
 // ==================== Recent / Since ====================
 
 export async function messageRecent(
-  opts: { hours?: string; since?: string; top?: string; account?: string },
+  opts: { hours?: string; since?: string; top?: string; pageToken?: string; account?: string },
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
     const top = opts.top ? parseInt(opts.top, 10) : 20
+    const pageState = decodePageTokenState(opts.pageToken, account, 'message.recent')
+    const pageToken = pageState?.cursor
 
-    // Determine the time threshold
-    let sinceDate: Date
-    if (opts.since) {
-      sinceDate = new Date(opts.since)
-      if (isNaN(sinceDate.getTime())) {
-        throw new ProviderError(`Invalid date format: ${opts.since}. Use ISO 8601 format.`, account.provider)
-      }
-    } else {
-      const hours = opts.hours ? parseInt(opts.hours, 10) : 24
-      sinceDate = new Date(Date.now() - hours * 60 * 60 * 1000)
-    }
-
-    if (account.provider === 'gmail') {
-      // Gmail uses epoch seconds in query
-      const epochSeconds = Math.floor(sinceDate.getTime() / 1000)
-      const query = `after:${epochSeconds}`
-      const result = await gmailMessages.listMessages(client, { query, top })
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-          attachments: m.hasAttachments,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-          { key: 'attachments', label: 'Attachments' },
-        ],
-      )
-    } else {
-      // Outlook uses OData filter
-      const isoDate = sinceDate.toISOString()
-      const result = await outlookMessages.listMessages(client, {
-        top,
-        filter: `receivedDateTime ge ${isoDate}`,
-      })
-      outputList(
-        result.messages.map((m) => ({
-          id: m.id,
-          from: m.from.address,
-          subject: m.subject,
-          date: m.date,
-          read: m.isRead,
-          attachments: m.hasAttachments,
-        })),
-        [
-          { key: 'id', label: 'ID' },
-          { key: 'from', label: 'From' },
-          { key: 'subject', label: 'Subject' },
-          { key: 'date', label: 'Date' },
-          { key: 'read', label: 'Read' },
-          { key: 'attachments', label: 'Attachments' },
-        ],
-      )
-    }
+    const sinceDate = resolveSinceDate(opts, {
+      contextSince: pageState?.context?.since,
+      rejectConflictingOptions: true,
+      invalidSince: (value) => new ProviderError(
+        `Invalid date format: ${value}. Use ISO 8601 format.`,
+        account.provider,
+      ),
+    })
+    const result = account.provider === 'gmail'
+      ? await gmailMessages.listMessagesSince(client, sinceDate, top, pageToken)
+      : await outlookMessages.listMessagesSince(client, sinceDate, top, pageToken)
+    outputMessagePage(account, 'message.recent', result, false, { since: sinceDate.toISOString() })
   } catch (error) {
     handleError(error)
   }
@@ -500,7 +466,7 @@ export async function messageAll(
     // Filter accounts by tag if specified
     let accountsToQuery = config.accounts
     if (opts.tag) {
-      accountsToQuery = getAccountsByTag(opts.tag)
+      accountsToQuery = getAccountsByTag(opts.tag, config)
     }
 
     if (accountsToQuery.length === 0) {
@@ -511,72 +477,58 @@ export async function messageAll(
 
     const top = opts.top ? parseInt(opts.top, 10) : 10 // per-account limit
 
-    // Determine the time threshold
-    let sinceDate: Date
-    if (opts.since) {
-      sinceDate = new Date(opts.since)
-      if (isNaN(sinceDate.getTime())) {
-        throw new ProviderError('Invalid date format. Use ISO 8601 format.', 'unknown')
-      }
-    } else {
-      const hours = opts.hours ? parseInt(opts.hours, 10) : 24
-      sinceDate = new Date(Date.now() - hours * 60 * 60 * 1000)
-    }
+    const sinceDate = resolveSinceDate(opts, {
+      invalidSince: () => new ProviderError('Invalid date format. Use ISO 8601 format.', 'unknown'),
+    })
 
-    const allMessages: Array<Record<string, unknown>> = []
-
-    for (const accountConfig of accountsToQuery) {
+    const limit = pLimit(4)
+    const pages = await Promise.all(accountsToQuery.map((accountConfig) => limit(async () => {
       try {
-        const client = accountConfig.provider === 'gmail'
-          ? createGmailClient(accountConfig)
-          : createOutlookClient(accountConfig)
-
-        if (accountConfig.provider === 'gmail') {
-          const epochSeconds = Math.floor(sinceDate.getTime() / 1000)
-          const query = `after:${epochSeconds}`
-          const result = await gmailMessages.listMessages(client, { query, top })
-          for (const m of result.messages) {
-            allMessages.push({
-              account_alias: accountConfig.alias,
-              account_email: accountConfig.email,
-              provider: accountConfig.provider,
-              id: m.id,
-              from: m.from.address,
-              subject: m.subject,
-              date: m.date,
-              read: m.isRead,
-              attachments: m.hasAttachments,
-            })
-          }
-        } else {
-          const isoDate = sinceDate.toISOString()
-          const result = await outlookMessages.listMessages(client, {
-            top,
-            filter: `receivedDateTime ge ${isoDate}`,
-          })
-          for (const m of result.messages) {
-            allMessages.push({
-              account_alias: accountConfig.alias,
-              account_email: accountConfig.email,
-              provider: accountConfig.provider,
-              id: m.id,
-              from: m.from.address,
-              subject: m.subject,
-              date: m.date,
-              read: m.isRead,
-              attachments: m.hasAttachments,
-            })
-          }
+        if (accountConfig.status !== 'active') {
+          throw new ConfigError(`Account ${accountConfig.alias} requires reauthentication`)
         }
-      } catch {
-        // If one account fails, continue with others
-        allMessages.push({
-          account_alias: accountConfig.alias,
-          account_email: accountConfig.email,
-          provider: accountConfig.provider,
-          error: 'Failed to fetch messages for this account',
-        })
+        const client = createClientForAccount(accountConfig)
+        const result = accountConfig.provider === 'gmail'
+          ? await gmailMessages.listMessagesSince(client, sinceDate, top)
+          : await outlookMessages.listMessagesSince(client, sinceDate, top)
+        return {
+          succeeded: result.messages.length > 0 || !('errors' in result) || (result.errors?.length ?? 0) === 0,
+          messages: result.messages.map((message) => ({
+            account_alias: accountConfig.alias,
+            account_email: accountConfig.email,
+            provider: accountConfig.provider,
+            id: message.id,
+            from: message.from.address,
+            subject: message.subject,
+            date: message.date,
+            read: message.isRead,
+            attachments: message.hasAttachments,
+          })),
+          errors: 'errors' in result
+            ? (result.errors ?? []).map((error) => ({
+                code: 'MESSAGE_FETCH_FAILED',
+                message: error.message,
+                item: { account: accountConfig.alias, id: error.id },
+              }))
+            : [],
+        }
+      } catch (error) {
+        return {
+          succeeded: false,
+          messages: [] as Array<Record<string, unknown>>,
+          errors: [{
+            code: 'ACCOUNT_FETCH_FAILED',
+            message: errorMessage(error),
+            item: { account: accountConfig.alias },
+          }],
+        }
       }
+    })))
+    const allMessages = pages.flatMap((page) => page.messages)
+    const errors = pages.flatMap((page) => page.errors)
+
+    if (!pages.some((page) => page.succeeded) && errors.length > 0) {
+      throw new CliMailError('Failed to fetch messages from every account', 'ALL_ACCOUNTS_FAILED', undefined, errors)
     }
 
     // Sort all messages by date descending
@@ -586,18 +538,84 @@ export async function messageAll(
       return dateB - dateA
     })
 
-    outputList(
-      allMessages,
-      [
-        { key: 'account_alias', label: 'Account' },
-        { key: 'provider', label: 'Provider' },
-        { key: 'from', label: 'From' },
-        { key: 'subject', label: 'Subject' },
-        { key: 'date', label: 'Date' },
-        { key: 'read', label: 'Read' },
-      ],
-    )
+    const columns = [
+      { key: 'account_alias', label: 'Account' },
+      { key: 'provider', label: 'Provider' },
+      { key: 'from', label: 'From' },
+      { key: 'subject', label: 'Subject' },
+      { key: 'date', label: 'Date' },
+      { key: 'read', label: 'Read' },
+    ]
+    if (errors.length > 0) outputPartial(allMessages, errors)
+    else outputList(allMessages, columns)
   } catch (error) {
     handleError(error)
+  }
+}
+
+function outputMessagePage(
+  account: Pick<AccountConfig, 'id' | 'provider'>,
+  operation: string,
+  result: {
+    messages: MessageSummary[]
+    nextPageToken?: string
+    errors?: Array<{ id: string; message: string }>
+  },
+  search = false,
+  tokenContext?: PageTokenContext,
+): void {
+  const items = messageRows(result.messages, { includeSnippet: search })
+  const meta = {
+    nextToken: encodePageToken(account, operation, result.nextPageToken, tokenContext),
+  }
+  outputPageResult(items, search ? messageSearchColumns : messageListColumns, {
+    meta,
+    errors: result.errors,
+    failCode: 'MESSAGE_PAGE_FAILED',
+    failMessage: 'Failed to fetch every message in this page',
+    itemCode: 'MESSAGE_FETCH_FAILED',
+  })
+}
+
+function resolveSinceDate(
+  opts: { hours?: string; since?: string },
+  options: {
+    contextSince?: string
+    rejectConflictingOptions?: boolean
+    invalidSince: (value: string) => Error
+  },
+): Date {
+  if (options.rejectConflictingOptions && opts.since && opts.hours) {
+    throw new ConfigError('Use either --since or --hours, not both')
+  }
+  if (options.contextSince) {
+    const contextDate = new Date(options.contextSince)
+    if (Number.isNaN(contextDate.getTime())) {
+      throw new ConfigError('Invalid time context in page token')
+    }
+    if (opts.since) {
+      const requested = new Date(opts.since)
+      if (Number.isNaN(requested.getTime())
+        || requested.toISOString() !== contextDate.toISOString()) {
+        throw new ConfigError('The supplied --since value does not match this page token')
+      }
+    }
+    return contextDate
+  }
+  if (opts.since) {
+    const requested = new Date(opts.since)
+    if (Number.isNaN(requested.getTime())) throw options.invalidSince(opts.since)
+    return requested
+  }
+  const hours = opts.hours ? parseInt(opts.hours, 10) : 24
+  return new Date(Date.now() - hours * 60 * 60 * 1000)
+}
+
+function readUtf8BodyFile(path: string): string {
+  const bytes = readRegularFile(path, 'Message body file', MAX_BODY_FILE_BYTES)
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new ConfigError(`Message body file must contain valid UTF-8 text: ${path}`)
   }
 }

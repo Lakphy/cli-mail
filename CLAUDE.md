@@ -1,55 +1,60 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project
 
-cli-mail (`@lakphy/cli-mail`) — An AI-oriented CLI email client for Gmail and Outlook. Outputs clean markdown/JSON with no interactive TUI. Single runtime dependency: `commander`.
+`@lakphy/cli-mail` 0.2 is a Node.js 22.12+ CLI for Gmail and Outlook. It uses direct REST calls, no provider SDKs, and exposes Markdown plus a stable JSON envelope.
 
 ## Commands
 
 ```bash
-pnpm run build        # Bundle with tsdown → dist/index.mjs
-pnpm run dev          # Watch mode
-pnpm run test         # Run vitest in watch mode
-pnpm run test:cov     # Single run with coverage
-pnpm run typecheck    # tsc --noEmit
-npx vitest run tests/utils/error.test.ts   # Run a single test file
+pnpm lint
+pnpm typecheck
+pnpm test:run
+pnpm test:cov
+pnpm build
+pnpm check
 ```
 
-Package manager is **pnpm**. The output is ESM (`"type": "module"`). The built binary gets a `#!/usr/bin/env node` shebang via tsdown banner config.
+The project is ESM and uses pnpm. `dist/index.mjs` is bundled by tsdown with a Node shebang.
 
 ## Architecture
 
-```
-src/index.ts            → entry point, calls createCli().parse()
-src/cli.ts              → Commander program definition, all commands & global options
-src/commands/resolve.ts → resolveAccount(): picks account by --account flag or default,
-                          returns the right provider HttpClient
-src/commands/*.ts       → thin command handlers: resolve account → call provider → format output
-src/providers/types.ts  → unified interfaces shared across providers
-src/providers/gmail/    → Gmail API implementation (messages, drafts, labels, threads, etc.)
-src/providers/outlook/  → Outlook/Graph API implementation (messages, drafts, folders, rules, etc.)
-src/config/store.ts     → reads/writes ~/.cli-mail/accounts.json (0600 perms)
-src/auth/               → OAuth flows: local callback server on :4088, token refresh
-src/output/formatter.ts → markdown tables (default) or JSON output
-src/utils/http.ts       → HttpClient: auto token refresh, auth retry, rate limit handling
-src/utils/error.ts      → typed error hierarchy with actionable suggestions
-src/utils/mime.ts       → MIME building, base64url, payload extraction
+```text
+src/index.ts                  executable entry
+src/run.ts                    parseAsync/error/exit-code boundary
+src/cli.ts                    Commander command tree and validation
+src/commands/                 provider-neutral command orchestration
+src/config/                   versioned config, migration, locking, atomic storage
+src/auth/                     state + PKCE OAuth and loopback callback server
+src/providers/gmail/          Gmail REST/MIME implementation
+src/providers/outlook/        Microsoft Graph implementation
+src/output/formatter.ts       Markdown and JSON envelopes
+src/utils/http.ts             auth, timeout, retry, raw responses, host validation
+src/utils/mime.ts             Nodemailer/MailParser MIME boundary
+src/utils/page-token.ts       account/provider/operation-bound opaque cursors
 ```
 
-**Data flow:** CLI command → `resolveAccount()` picks account config → creates provider-specific `HttpClient` (Gmail or Outlook base URL) → provider module calls API → `formatter` outputs markdown table or JSON.
+Command flow: Commander validates input → command resolves an active account → provider client performs REST calls → formatter writes one result. Provider list functions expose raw cursors and per-item errors; the command layer wraps cursors and emits partial success.
 
-**Provider pattern:** Gmail and Outlook have parallel module structures (`messages.ts`, `drafts.ts`, `folders.ts`/`labels.ts`, `attachments.ts`, etc.). Each exports functions taking an `HttpClient` and returning normalized types from `providers/types.ts`. Command handlers in `src/commands/` branch on `provider` field to call the right module.
+## Contracts
+
+- JSON success: `{ok:true,data,meta,warnings}`, exit 0.
+- JSON partial: `{ok:false,partial:true,data,meta,warnings,errors}`, exit 2.
+- JSON failure: `{ok:false,error}`, exit 1.
+- JSON stdout contains exactly one document. Do not write diagnostics to stdout before formatting.
+- Raw MIME uses `Buffer`; do not decode/re-encode it through UTF-8.
+- Message delete defaults to trash. Permanent delete requires `--permanent --yes` and provider capability.
+- Sends and other irreversible commands require `--yes` at the CLI boundary.
+- Provider cursors never go directly to users; encode/decode them with `utils/page-token.ts`.
+
+## OAuth and config
+
+- Gmail accepts Desktop credentials JSON only. Default scopes are `gmail.modify` and `gmail.settings.basic`; `--full-access` requests `mail.google.com`.
+- Outlook is a public/native client and never uses a client secret.
+- OAuth requires random state, S256 PKCE, and a random loopback port.
+- v1 migration preserves account metadata, backs up the source, discards old tokens, and requires reauthentication.
+- Config writes must remain lock-protected, atomic, `0600`, and recoverable from `.last-good`.
 
 ## Testing
 
-Tests use **Vitest** and live under `tests/` mirroring `src/` structure. `tests/helpers.ts` provides mock factories for `HttpClient` and `AccountConfig`. Tests are unit-level — no real API calls. No lint or format tooling is configured.
-
-## Key Conventions
-
-- Global `--format <markdown|json>` and `--account <alias>` options are captured in a `preAction` hook on the Commander program.
-- Booleans render as `✓`/`✗` in markdown output.
-- Config file path: `~/.cli-mail/accounts.json`.
-- OAuth callback server binds to `127.0.0.1:4088`.
-- The `skill/` directory contains Claude Code skill definitions for using this tool as an AI agent — not part of the library itself.
+Tests mirror `src/` under `tests/`. Provider tests must not call real APIs. Cover REST paths/query/header behavior, raw responses, pagination, partial failure, output/exit contracts, and security boundaries. Update tests when changing a public 0.2 contract; do not preserve obsolete 0.1 JSON shapes.

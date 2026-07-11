@@ -3,7 +3,9 @@
 import type { HttpClient } from '../../utils/http.js'
 import type { AttachmentSummary, AttachmentDetail } from '../types.js'
 import { base64UrlToBuffer, type GmailPayload } from '../../utils/mime.js'
-import { writeFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { extractGmailAttachments } from './helpers.js'
+import { ApiError } from '../../utils/error.js'
 
 interface GmailAttachment {
   attachmentId: string
@@ -15,12 +17,28 @@ export async function listAttachments(
   client: HttpClient,
   messageId: string,
 ): Promise<AttachmentSummary[]> {
-  // Get message metadata to find attachments
+  // MIME parts are only present in full responses, not format=metadata.
   const msg = await client.get<{ payload?: GmailPayload }>(`/messages/${messageId}`, {
     format: 'full',
   })
 
-  return extractAttachments(msg.payload)
+  return extractGmailAttachments(msg.payload)
+}
+
+export async function getAttachmentInfo(
+  client: HttpClient,
+  messageId: string,
+  attachmentId: string,
+): Promise<AttachmentSummary> {
+  const msg = await client.get<{ payload?: GmailPayload }>(`/messages/${messageId}`, {
+    format: 'full',
+  })
+  const attachment = extractGmailAttachments(msg.payload)
+    .find((candidate) => candidate.id === attachmentId)
+  if (!attachment) {
+    throw new ApiError(`Gmail attachment not found: ${attachmentId}`, 404)
+  }
+  return attachment
 }
 
 export async function getAttachment(
@@ -28,23 +46,18 @@ export async function getAttachment(
   messageId: string,
   attachmentId: string,
 ): Promise<AttachmentDetail> {
-  const attachment = await client.get<GmailAttachment>(
-    `/messages/${messageId}/attachments/${attachmentId}`,
-  )
-
-  // Get filename from message metadata
-  const msg = await client.get<{ payload?: GmailPayload }>(`/messages/${messageId}`, {
-    format: 'metadata',
-  })
-  const attachments = extractAttachments(msg.payload)
-  const meta = attachments.find((a) => a.id === attachmentId)
+  const [attachment, info] = await Promise.all([
+    client.get<GmailAttachment>(
+      `/messages/${messageId}/attachments/${attachmentId}`,
+    ),
+    getAttachmentInfo(client, messageId, attachmentId),
+  ])
 
   return {
-    id: attachmentId,
-    name: meta?.name || 'attachment',
-    contentType: meta?.contentType || 'application/octet-stream',
-    size: attachment.size,
-    content: attachment.data, // base64url encoded data
+    ...info,
+    // Shared AttachmentDetail uses standard base64 (Outlook contentBytes has
+    // the same representation); Gmail's base64url is normalized here.
+    content: base64UrlToBuffer(attachment.data).toString('base64'),
   }
 }
 
@@ -53,35 +66,16 @@ export async function downloadAttachment(
   messageId: string,
   attachmentId: string,
   outputPath: string,
+  options: { force?: boolean } = {},
 ): Promise<string> {
-  const attachment = await getAttachment(client, messageId, attachmentId)
-  const buffer = base64UrlToBuffer(attachment.content || '')
-  writeFileSync(outputPath, buffer)
+  // A caller already supplied the target path, so downloading does not need a
+  // second message-detail request just to discover the remote filename.
+  const attachment = await client.get<GmailAttachment>(
+    `/messages/${messageId}/attachments/${attachmentId}`,
+  )
+  await writeFile(outputPath, base64UrlToBuffer(attachment.data), {
+    flag: options.force ? 'w' : 'wx',
+    mode: 0o600,
+  })
   return outputPath
-}
-
-// --- Helpers ---
-
-function extractAttachments(payload?: GmailPayload): AttachmentSummary[] {
-  if (!payload) return []
-  const attachments: AttachmentSummary[] = []
-
-  function walk(p: GmailPayload): void {
-    if (p.filename && p.filename.length > 0 && p.body?.attachmentId) {
-      attachments.push({
-        id: p.body.attachmentId,
-        name: p.filename,
-        contentType: p.mimeType || 'application/octet-stream',
-        size: p.body.size || 0,
-      })
-    }
-    if (p.parts) {
-      for (const part of p.parts) {
-        walk(part)
-      }
-    }
-  }
-
-  walk(payload)
-  return attachments
 }

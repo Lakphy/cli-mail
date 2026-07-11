@@ -1,54 +1,149 @@
-// Gmail OAuth2 authentication
+// Gmail OAuth2 authentication for installed/desktop public clients.
 
+import { z } from 'zod'
+import { readRegularFile } from '../../utils/files.js'
 import { startOAuthCallbackServer } from '../../auth/oauth-server.js'
-import { exchangeCodeForTokens, buildAuthUrl } from '../../auth/token-store.js'
-import type { OAuthTokens } from '../../config/types.js'
+import {
+  launchSystemBrowser,
+  openOrShowUrl,
+  type BrowserLauncher,
+} from '../../auth/browser.js'
+import {
+  buildAuthUrl,
+  exchangeCodeForTokens,
+  generateOAuthState,
+  generatePkcePair,
+} from '../../auth/token-store.js'
+import { GMAIL_AUTH, type OAuthTokens } from '../../config/types.js'
+import { errorMessage } from '../../utils/error.js'
 
-/**
- * Run the Gmail OAuth2 authorization flow.
- * Opens a browser for the user to authorize, receives the callback.
- */
+export interface GmailDesktopCredentials {
+  clientId: string
+  clientSecret?: string
+}
+
+export interface GmailAuthFlowOptions {
+  clientId?: string
+  clientSecret?: string
+  credentialsFile?: string
+  fullAccess?: boolean
+  timeoutMs?: number
+  launchBrowser?: BrowserLauncher
+  onAuthorizationUrl?: (url: string) => void
+}
+
+const credentialsFileSchema = z.object({
+  installed: z.object({
+    client_id: z.string().min(1),
+    client_secret: z.string().min(1).optional(),
+    auth_uri: z.enum([
+      GMAIL_AUTH.authUrl,
+      'https://accounts.google.com/o/oauth2/auth',
+    ]),
+    token_uri: z.literal(GMAIL_AUTH.tokenUrl),
+    redirect_uris: z.array(z.string()).min(1),
+  }).passthrough(),
+  web: z.never().optional(),
+}).passthrough()
+
+export function readGmailDesktopCredentials(path: string): GmailDesktopCredentials {
+  let value: unknown
+  try {
+    value = JSON.parse(
+      readRegularFile(path, 'Gmail OAuth credentials file', 1024 * 1024).toString('utf8'),
+    ) as unknown
+  } catch (error) {
+    const reason = errorMessage(error)
+    throw new Error(`Failed to read Gmail desktop OAuth credentials: ${reason}`)
+  }
+
+  const parsed = credentialsFileSchema.safeParse(value)
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+      .join('; ')
+    throw new Error(
+      `Invalid Gmail credentials file. Export an OAuth Desktop app credential: ${details}`,
+    )
+  }
+
+  const hasLoopbackRedirect = parsed.data.installed.redirect_uris.some((uri) => {
+    try {
+      const url = new URL(uri)
+      return url.protocol === 'http:'
+        && (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+    } catch {
+      return false
+    }
+  })
+  if (!hasLoopbackRedirect) {
+    throw new Error('Invalid Gmail desktop credentials: no loopback redirect URI')
+  }
+
+  return {
+    clientId: parsed.data.installed.client_id,
+    ...(parsed.data.installed.client_secret
+      ? { clientSecret: parsed.data.installed.client_secret }
+      : {}),
+  }
+}
+
 export async function gmailAuthFlow(
-  clientId: string,
-  clientSecret: string,
+  options: GmailAuthFlowOptions,
 ): Promise<{ tokens: OAuthTokens; email: string }> {
-  // Start callback server
-  const { result } = await startOAuthCallbackServer()
-  const redirectUri = 'http://localhost:4088/callback'
+  const resolvedOptions = options.credentialsFile
+    ? { ...options, ...readGmailDesktopCredentials(options.credentialsFile) }
+    : options
+  if (!resolvedOptions.clientId) throw new Error('A Gmail desktop OAuth client ID is required')
 
-  // Build auth URL
+  const state = generateOAuthState()
+  const pkce = generatePkcePair()
+  const callback = await startOAuthCallbackServer({
+    port: 0,
+    expectedState: state,
+    timeoutMs: resolvedOptions.timeoutMs,
+  })
+  const redirectUri = `http://127.0.0.1:${callback.port}/callback`
   const authUrl = buildAuthUrl({
     provider: 'gmail',
-    client_id: clientId,
+    client_id: resolvedOptions.clientId,
     redirect_uri: redirectUri,
+    state,
+    code_challenge: pkce.challenge,
+    fullAccess: resolvedOptions.fullAccess,
   })
 
-  // Print URL for user to open
-  process.stdout.write(`\nOpen the following URL in your browser to authorize:\n\n${authUrl}\n\nWaiting for authorization...\n`)
-
-  // Wait for callback
-  const { code } = await result
-
-  // Exchange code for tokens
+  await openOrShowUrl(
+    authUrl,
+    resolvedOptions.launchBrowser ?? launchSystemBrowser,
+    resolvedOptions.onAuthorizationUrl,
+  )
+  const { code } = await callback.result
   const tokens = await exchangeCodeForTokens({
     provider: 'gmail',
     code,
-    client_id: clientId,
-    client_secret: clientSecret,
+    client_id: resolvedOptions.clientId,
+    client_secret: resolvedOptions.clientSecret,
     redirect_uri: redirectUri,
+    code_verifier: pkce.verifier,
   })
-
-  // Get user email
-  const profileResponse = await fetch(
-    'https://gmail.googleapis.com/gmail/v1/users/me/profile',
-    { headers: { Authorization: `Bearer ${tokens.access_token}` } },
-  )
-
-  if (!profileResponse.ok) {
-    throw new Error('Failed to get Gmail profile')
+  if (!tokens.scope) {
+    tokens.scope = (
+      resolvedOptions.fullAccess ? GMAIL_AUTH.fullAccessScopes : GMAIL_AUTH.scopes
+    ).join(' ')
   }
 
-  const profile = (await profileResponse.json()) as { emailAddress: string }
+  const profileResponse = await fetch(
+    'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+    {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+      signal: AbortSignal.timeout(30_000),
+      redirect: 'error',
+    },
+  )
+  if (!profileResponse.ok) throw new Error('Failed to get Gmail profile')
 
+  const profile = await profileResponse.json() as { emailAddress?: string }
+  if (!profile.emailAddress) throw new Error('Gmail profile did not include an email address')
   return { tokens, email: profile.emailAddress }
 }
