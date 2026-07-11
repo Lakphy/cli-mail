@@ -305,26 +305,67 @@ export function extractBodyFromPayload(payload: GmailPayload): {
   body: string
   bodyType: 'text' | 'html'
 } {
-  const textParts: GmailPayload[] = []
-  const htmlParts: GmailPayload[] = []
-
-  function walk(part: GmailPayload): void {
-    const isAttachment = Boolean(part.filename)
-    if (!isAttachment && part.body?.data) {
-      if (part.mimeType?.toLowerCase() === 'text/plain') textParts.push(part)
-      if (part.mimeType?.toLowerCase() === 'text/html') htmlParts.push(part)
-    }
-    for (const child of part.parts ?? []) walk(child)
-  }
-
-  walk(payload)
-  const selected = textParts[0] ?? htmlParts[0]
-  if (!selected?.body?.data) return { body: '', bodyType: 'text' }
+  const selected = selectRenderableBody(payload)
+  if (!selected) return { body: '', bodyType: 'text' }
 
   return {
     body: decodeTextPart(selected),
     bodyType: selected.mimeType?.toLowerCase() === 'text/html' ? 'html' : 'text',
   }
+}
+
+/**
+ * Select a body according to the MIME tree rather than flattening all leaves.
+ * Attachment containers exclude their entire subtree, alternatives prefer a
+ * plain representation, and ordered multipart containers use their first
+ * renderable child.
+ */
+function selectRenderableBody(part: GmailPayload): GmailPayload | undefined {
+  if (isAttachmentEntity(part)) return undefined
+
+  const mimeType = part.mimeType?.toLowerCase().trim() ?? ''
+  if (
+    (mimeType === 'text/plain' || mimeType === 'text/html')
+    && part.body?.data !== undefined
+  ) {
+    return part
+  }
+
+  // An encapsulated RFC 822 message is a separate message entity, not the
+  // surrounding message's body, even if Gmail omits its filename metadata.
+  if (mimeType.startsWith('message/')) return undefined
+
+  if (mimeType === 'multipart/alternative') {
+    let html: GmailPayload | undefined
+    let fallback: GmailPayload | undefined
+    for (const child of part.parts ?? []) {
+      const candidate = selectRenderableBody(child)
+      if (!candidate) continue
+      fallback ??= candidate
+      const candidateType = candidate.mimeType?.toLowerCase()
+      if (candidateType === 'text/plain') return candidate
+      if (candidateType === 'text/html') html ??= candidate
+    }
+    return html ?? fallback
+  }
+
+  // multipart/mixed, multipart/related, and malformed/unknown containers all
+  // retain document order so an attachment's later text cannot replace the
+  // actual first eligible body.
+  for (const child of part.parts ?? []) {
+    const candidate = selectRenderableBody(child)
+    if (candidate) return candidate
+  }
+  return undefined
+}
+
+function isAttachmentEntity(part: GmailPayload): boolean {
+  if (Boolean(part.filename)) return true
+  const disposition = getHeader(part.headers, 'Content-Disposition')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase()
+  return disposition === 'attachment'
 }
 
 function decodeTextPart(part: GmailPayload): string {

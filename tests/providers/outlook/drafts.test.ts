@@ -72,18 +72,12 @@ describe('Outlook Drafts Provider', () => {
     })
   })
 
-  test('updateDraft preserves body content when only bodyType changes', async () => {
-    ;(mockClient.get as Mock).mockResolvedValue({
-      id: 'd-text',
-      body: { contentType: 'Text', content: 'keep me' },
-    })
-    ;(mockClient.patch as Mock).mockResolvedValue({ id: 'd-text' })
+  test('updateDraft rejects bodyType without an explicit body', async () => {
+    await expect(updateDraft(mockClient, 'd-text', { bodyType: 'html' }))
+      .rejects.toThrow('bodyType can only be changed together with body')
 
-    await updateDraft(mockClient, 'd-text', { bodyType: 'html' })
-
-    expect(mockClient.patch).toHaveBeenCalledWith('/messages/d-text', {
-      body: { contentType: 'HTML', content: 'keep me' },
-    })
+    expect(mockClient.get).not.toHaveBeenCalled()
+    expect(mockClient.patch).not.toHaveBeenCalled()
   })
 
   test('listDrafts follows a validated Graph continuation URL', async () => {

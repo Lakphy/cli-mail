@@ -78,6 +78,7 @@ export async function vacationGet(opts: { account?: string }): Promise<void> {
 export async function vacationSet(opts: {
   enabled: boolean
   message?: string
+  externalAudience?: 'none' | 'contactsOnly' | 'all'
   start?: string
   end?: string
   account?: string
@@ -89,6 +90,9 @@ export async function vacationSet(opts: {
     const { account, client } = resolveAccount(opts.account)
 
     if (account.provider === 'gmail') {
+      if (opts.externalAudience !== undefined) {
+        throw new ConfigError('--external-audience is only supported for Outlook accounts')
+      }
       await gmailSettings.setVacation(client, {
         enabled: opts.enabled,
         message: opts.message,
@@ -100,6 +104,7 @@ export async function vacationSet(opts: {
         enabled: opts.enabled,
         internalMessage: opts.message,
         externalMessage: opts.message,
+        externalAudience: opts.externalAudience,
         startDateTime: opts.start,
         endDateTime: opts.end,
       })

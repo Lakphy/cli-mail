@@ -6,6 +6,7 @@ import {
   messageMove,
   messageRecent,
   messageReply,
+  messageSearch,
   messageTrash,
 } from '../../src/commands/message'
 import * as resolveModule from '../../src/commands/resolve'
@@ -15,6 +16,7 @@ import * as outlookMessages from '../../src/providers/outlook/messages'
 import * as gmailSettings from '../../src/providers/gmail/settings'
 import * as configStore from '../../src/config/store'
 import * as commandResolve from '../../src/commands/resolve'
+import { encodePageToken } from '../../src/utils/page-token'
 
 // Mock dependencies
 vi.mock('../../src/commands/resolve', async (importOriginal) => ({
@@ -39,6 +41,8 @@ vi.mock('../../src/utils/error', async (importOriginal) => {
 vi.mock('../../src/providers/gmail/messages', () => ({
   listMessages: vi.fn(),
   listMessagesSince: vi.fn(),
+  listInboxMessagesSince: vi.fn(),
+  searchMessages: vi.fn(),
   getMessage: vi.fn(),
   moveMessage: vi.fn(),
   trashMessage: vi.fn(),
@@ -47,6 +51,8 @@ vi.mock('../../src/providers/gmail/messages', () => ({
 vi.mock('../../src/providers/outlook/messages', () => ({
   listMessages: vi.fn(),
   listMessagesSince: vi.fn(),
+  listInboxMessagesSince: vi.fn(),
+  searchMessages: vi.fn(),
   getMessage: vi.fn(),
   moveMessage: vi.fn(),
   trashMessage: vi.fn(),
@@ -90,6 +96,37 @@ describe('Message Command Handlers', () => {
 
     expect(outlookMessages.listMessages).toHaveBeenCalledWith(dummyClient, { top: 10, skip: 5, folder: undefined })
     expect(formatterModule.outputList).toHaveBeenCalled()
+  })
+
+  test('messageList restores v2 folder, query, and top context', async () => {
+    const account = { id: 'outlook-1', provider: 'outlook' as const }
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: account as any, client: dummyClient })
+    vi.mocked(outlookMessages.listMessages).mockResolvedValue({ messages: [] })
+    const pageToken = encodePageToken(account, 'message.list', 'provider-next', {
+      folder: 'archive',
+      query: 'from:sender@example.com',
+      top: '37',
+    })
+
+    await messageList({ pageToken })
+
+    expect(outlookMessages.listMessages).toHaveBeenCalledWith(dummyClient, {
+      folder: 'archive',
+      query: 'from:sender@example.com',
+      top: 37,
+      skip: undefined,
+      pageToken: 'provider-next',
+    })
+    await expect(messageList({ pageToken, folder: 'inbox' })).rejects.toThrow(/does not match/)
+  })
+
+  test('messageList rejects Gmail skip and skip with a page token', async () => {
+    const account = { id: 'gmail-1', provider: 'gmail' as const }
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: account as any, client: dummyClient })
+    await expect(messageList({ skip: '1' })).rejects.toThrow(/not supported for Gmail/)
+    const pageToken = encodePageToken(account, 'message.list', 'next', { top: '20' })
+    await expect(messageList({ skip: '1', pageToken })).rejects.toThrow(/cannot be combined/)
+    expect(gmailMessages.listMessages).not.toHaveBeenCalled()
   })
 
   test('messageList distinguishes partial from complete page failure', async () => {
@@ -211,11 +248,13 @@ describe('Message Command Handlers', () => {
     vi.mocked(configStore.loadConfig).mockReturnValue(config)
     vi.mocked(configStore.getAccountsByTag).mockReturnValue([account])
     vi.mocked(commandResolve.createClientForAccount).mockReturnValue(dummyClient)
-    vi.mocked(gmailMessages.listMessagesSince).mockResolvedValue({ messages: [] })
+    vi.mocked(gmailMessages.listInboxMessagesSince).mockResolvedValue({ messages: [] })
 
     await messageAll({ tag: 'work' })
     expect(configStore.loadConfig).toHaveBeenCalledTimes(1)
     expect(configStore.getAccountsByTag).toHaveBeenCalledWith('work', config)
+    expect(gmailMessages.listInboxMessagesSince).toHaveBeenCalled()
+    expect(gmailMessages.listMessagesSince).not.toHaveBeenCalled()
   })
 
   test('messageRecent delegates date-query syntax to the provider', async () => {
@@ -232,6 +271,37 @@ describe('Message Command Handlers', () => {
       new Date('2026-07-11T00:00:00.000Z'),
       7,
       undefined,
+    )
+  })
+
+  test('messageSearch and messageRecent restore required v2 context', async () => {
+    const account = { id: 'gmail-1', provider: 'gmail' as const }
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: account as any, client: dummyClient })
+    vi.mocked(gmailMessages.searchMessages).mockResolvedValue({ messages: [] })
+    vi.mocked(gmailMessages.listMessagesSince).mockResolvedValue({ messages: [] })
+
+    const searchToken = encodePageToken(account, 'message.search', 'search-next', {
+      query: 'is:unread',
+      top: '11',
+    })
+    await messageSearch({ pageToken: searchToken })
+    expect(gmailMessages.searchMessages).toHaveBeenCalledWith(
+      dummyClient,
+      'is:unread',
+      11,
+      'search-next',
+    )
+
+    const recentToken = encodePageToken(account, 'message.recent', 'recent-next', {
+      since: '2026-07-10T00:00:00.000Z',
+      top: '9',
+    })
+    await messageRecent({ pageToken: recentToken })
+    expect(gmailMessages.listMessagesSince).toHaveBeenLastCalledWith(
+      dummyClient,
+      new Date('2026-07-10T00:00:00.000Z'),
+      9,
+      'recent-next',
     )
   })
 })

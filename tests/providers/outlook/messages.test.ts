@@ -4,6 +4,7 @@ import { ApiError } from '../../../src/utils/error'
 import {
   listMessages,
   listMessagesSince,
+  listInboxMessagesSince,
   getMessage,
   sendMessage,
   deleteMessage,
@@ -49,6 +50,24 @@ describe('Outlook Messages Provider', () => {
       '/messages',
       expect.objectContaining({
         $top: 7,
+        $filter: 'receivedDateTime ge 2026-07-11T00:00:00.000Z',
+      }),
+    )
+  })
+
+  test('listInboxMessagesSince scopes the filter to the Inbox folder', async () => {
+    ;(mockClient.get as Mock).mockResolvedValue({ value: [] })
+
+    await listInboxMessagesSince(
+      mockClient,
+      new Date('2026-07-11T00:00:00.000Z'),
+      9,
+    )
+
+    expect(mockClient.get).toHaveBeenCalledWith(
+      '/mailFolders/Inbox/messages',
+      expect.objectContaining({
+        $top: 9,
         $filter: 'receivedDateTime ge 2026-07-11T00:00:00.000Z',
       }),
     )

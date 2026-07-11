@@ -4,7 +4,12 @@ import { requireCapability, requireProvider, resolveAccount } from './resolve.js
 import { output, outputSuccess } from '../output/formatter.js'
 import { handleError } from '../utils/error.js'
 import * as gmailThreads from '../providers/gmail/threads.js'
-import { decodePageToken, encodePageToken } from '../utils/page-token.js'
+import {
+  createPageTokenContext,
+  decodePageTokenState,
+  encodePageToken,
+  resolvePageTokenOption,
+} from '../utils/page-token.js'
 import { outputPageResult } from './shared.js'
 
 const THREAD_PROVIDER_EXPLANATION = 'Thread operations are only supported for Gmail accounts. Outlook uses conversationId on messages instead.'
@@ -14,11 +19,13 @@ export async function threadList(opts: { query?: string; top?: string; pageToken
     const { account, client } = resolveAccount(opts.account)
     requireProvider(account, 'gmail', THREAD_PROVIDER_EXPLANATION)
 
-    const pageToken = decodePageToken(opts.pageToken, account, 'thread.list')
+    const pageState = decodePageTokenState(opts.pageToken, account, 'thread.list')
+    const query = resolvePageTokenOption(pageState, 'query', opts.query)
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
     const result = await gmailThreads.listThreads(client, {
-      query: opts.query,
-      top: opts.top ? parseInt(opts.top, 10) : 20,
-      pageToken,
+      query,
+      top: parseInt(topValue, 10),
+      pageToken: pageState?.cursor,
     })
 
     const items = result.threads.map((t) => ({
@@ -35,7 +42,12 @@ export async function threadList(opts: { query?: string; top?: string; pageToken
         { key: 'lastDate', label: 'Last Date' },
         { key: 'snippet', label: 'Snippet' },
       ]
-    const meta = { nextToken: encodePageToken(account, 'thread.list', result.nextPageToken) }
+    const meta = { nextToken: encodePageToken(
+      account,
+      'thread.list',
+      result.nextPageToken,
+      createPageTokenContext({ query, top: topValue }),
+    ) }
     outputPageResult(items, columns, {
       meta,
       errors: result.errors,

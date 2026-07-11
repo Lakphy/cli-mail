@@ -23,6 +23,7 @@ import {
 import { CliMailError, ConfigError } from '../../utils/error.js'
 import {
   extractGmailAttachments,
+  encodeGmailPathSegment,
   headersToRecord,
   normalizeMessageSummary,
   settledMapWithConcurrency,
@@ -77,6 +78,11 @@ export async function listMessages(
   client: HttpClient,
   options: ListOptions = {},
 ): Promise<GmailMessageListResult> {
+  if (options.skip !== undefined) {
+    throw new ConfigError(
+      'Gmail does not support numeric skip pagination; use a page token instead.',
+    )
+  }
   const query: Record<string, string | number | boolean | string[] | undefined> = {
     maxResults: options.top ?? 20,
     q: options.query,
@@ -96,10 +102,13 @@ export async function listMessages(
   const settled = await settledMapWithConcurrency(
     listed,
     DETAIL_CONCURRENCY,
-    (message) => client.get<GmailMessage>(`/messages/${message.id}`, {
-      format: 'full',
-      fields: 'id,threadId,labelIds,snippet,internalDate,payload',
-    }),
+    (message) => client.get<GmailMessage>(
+      `/messages/${encodeGmailPathSegment(message.id)}`,
+      {
+        format: 'full',
+        fields: 'id,threadId,labelIds,snippet,internalDate,payload',
+      },
+    ),
   )
   const { values, errors } = settledValuesAndErrors(
     listed.map((message) => message.id),
@@ -126,11 +135,29 @@ export function listMessagesSince(
   })
 }
 
+/** List only Inbox messages received after the supplied time. */
+export function listInboxMessagesSince(
+  client: HttpClient,
+  sinceDate: Date,
+  top: number,
+  pageToken?: string,
+): Promise<GmailMessageListResult> {
+  return listMessages(client, {
+    folder: 'INBOX',
+    query: `after:${Math.floor(sinceDate.getTime() / 1000)}`,
+    top,
+    pageToken,
+  })
+}
+
 export async function getMessage(
   client: HttpClient,
   id: string,
 ): Promise<MessageDetail> {
-  const message = await client.get<GmailMessage>(`/messages/${id}`, { format: 'full' })
+  const message = await client.get<GmailMessage>(
+    `/messages/${encodeGmailPathSegment(id)}`,
+    { format: 'full' },
+  )
   return normalizeMessageDetail(message)
 }
 
@@ -139,7 +166,10 @@ export async function getMessageRaw(
   client: HttpClient,
   id: string,
 ): Promise<Buffer> {
-  const message = await client.get<GmailMessage>(`/messages/${id}`, { format: 'raw' })
+  const message = await client.get<GmailMessage>(
+    `/messages/${encodeGmailPathSegment(id)}`,
+    { format: 'raw' },
+  )
   return message.raw ? base64UrlToBuffer(message.raw) : Buffer.alloc(0)
 }
 
@@ -284,10 +314,11 @@ export async function deleteMessage(
   id: string,
   permanent = false,
 ): Promise<void> {
+  const encodedId = encodeGmailPathSegment(id)
   if (permanent) {
-    await client.delete(`/messages/${id}`)
+    await client.delete(`/messages/${encodedId}`)
   } else {
-    await client.post(`/messages/${id}/trash`)
+    await client.post(`/messages/${encodedId}/trash`)
   }
 }
 
@@ -296,7 +327,7 @@ export async function moveMessage(
   id: string,
   destinationLabelId: string,
 ): Promise<void> {
-  await client.post(`/messages/${id}/modify`, {
+  await client.post(`/messages/${encodeGmailPathSegment(id)}/modify`, {
     addLabelIds: [destinationLabelId],
     removeLabelIds: ['INBOX'],
   })
@@ -316,7 +347,10 @@ export async function markMessage(
   else if (options.flagged === false) removeLabelIds.push('STARRED')
 
   if (addLabelIds.length > 0 || removeLabelIds.length > 0) {
-    await client.post(`/messages/${id}/modify`, { addLabelIds, removeLabelIds })
+    await client.post(`/messages/${encodeGmailPathSegment(id)}/modify`, {
+      addLabelIds,
+      removeLabelIds,
+    })
   }
 }
 
@@ -357,11 +391,11 @@ export async function importMessage(
 }
 
 export async function untrashMessage(client: HttpClient, id: string): Promise<void> {
-  await client.post(`/messages/${id}/untrash`)
+  await client.post(`/messages/${encodeGmailPathSegment(id)}/untrash`)
 }
 
 export async function trashMessage(client: HttpClient, id: string): Promise<void> {
-  await client.post(`/messages/${id}/trash`)
+  await client.post(`/messages/${encodeGmailPathSegment(id)}/trash`)
 }
 
 export async function batchModifyMessages(
@@ -381,7 +415,7 @@ export async function insertMessage(
   client: HttpClient,
   rawMime: string | Buffer,
 ): Promise<{ id: string }> {
-  const result = await client.post<GmailMessage>('/messages/insert', {
+  const result = await client.post<GmailMessage>('/messages', {
     raw: toBase64Url(rawMime),
   })
   return { id: result.id }

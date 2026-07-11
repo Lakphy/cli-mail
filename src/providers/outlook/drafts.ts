@@ -80,12 +80,16 @@ export async function updateDraft(
 ): Promise<{ id: string }> {
   const updates: Record<string, unknown> = {}
 
+  if (options.bodyType !== undefined && options.body === undefined) {
+    throw new TypeError('bodyType can only be changed together with body')
+  }
+
   if (options.subject !== undefined) {
     updates.subject = options.subject
   }
-  if (options.body !== undefined || options.bodyType !== undefined) {
+  if (options.body !== undefined) {
     let existingBody: GraphMessage['body']
-    if (options.body === undefined || options.bodyType === undefined) {
+    if (options.bodyType === undefined) {
       const existing = await client.get<GraphMessage>(`/messages/${encodeURIComponent(id)}`, {
         '$select': 'body',
       })
@@ -96,7 +100,7 @@ export async function updateDraft(
       contentType: options.bodyType
         ? (options.bodyType === 'html' ? 'HTML' : 'Text')
         : (existingBody?.contentType || 'Text'),
-      content: options.body ?? existingBody?.content ?? '',
+      content: options.body,
     }
   }
   if (options.to) {

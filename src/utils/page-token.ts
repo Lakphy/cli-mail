@@ -3,8 +3,8 @@ import { ConfigError } from './error.js'
 
 export type PageTokenContext = Record<string, string>
 
-interface PageTokenPayload {
-  v: 1
+interface PageTokenPayloadV2 {
+  v: 2
   accountId: string
   provider: Provider
   operation: string
@@ -17,6 +17,32 @@ export interface DecodedPageToken {
   context?: PageTokenContext
 }
 
+/**
+ * Restore an option captured by a v2 page token. An omitted option inherits the
+ * first-page value; an explicitly repeated option must be identical.
+ */
+export function resolvePageTokenOption(
+  state: DecodedPageToken | undefined,
+  key: string,
+  explicitValue: string | undefined,
+  optionName = `--${key}`,
+): string | undefined {
+  if (!state) return explicitValue
+  const storedValue = state.context?.[key]
+  if (explicitValue !== undefined && explicitValue !== storedValue) {
+    throw new ConfigError(`The supplied ${optionName} value does not match this page token`)
+  }
+  return storedValue
+}
+
+export function createPageTokenContext(
+  values: Record<string, string | undefined>,
+): PageTokenContext {
+  return Object.fromEntries(
+    Object.entries(values).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  )
+}
+
 export function encodePageToken(
   account: Pick<AccountConfig, 'id' | 'provider'>,
   operation: string,
@@ -24,8 +50,8 @@ export function encodePageToken(
   context?: PageTokenContext,
 ): string | undefined {
   if (!cursor) return undefined
-  const payload: PageTokenPayload = {
-    v: 1,
+  const payload: PageTokenPayloadV2 = {
+    v: 2,
     accountId: account.id,
     provider: account.provider,
     operation,
@@ -59,6 +85,11 @@ export function decodePageTokenState(
   } catch {
     throw invalidToken()
   }
+  if (isLegacyPageTokenPayload(payload)) {
+    throw new ConfigError(
+      'Page tokens created by cli-mail 0.2.0 are no longer supported. Run the command again without --page-token to start from the first page.',
+    )
+  }
   if (!isPageTokenPayload(payload)
     || payload.accountId !== account.id
     || payload.provider !== account.provider
@@ -71,16 +102,23 @@ export function decodePageTokenState(
   }
 }
 
-function isPageTokenPayload(value: unknown): value is PageTokenPayload {
+function isPageTokenPayload(value: unknown): value is PageTokenPayloadV2 {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
   const payload = value as Record<string, unknown>
-  return payload.v === 1
+  return payload.v === 2
     && typeof payload.accountId === 'string'
     && (payload.provider === 'gmail' || payload.provider === 'outlook')
     && typeof payload.operation === 'string'
     && typeof payload.cursor === 'string'
     && payload.cursor.length > 0
     && (payload.context === undefined || isStringRecord(payload.context))
+}
+
+function isLegacyPageTokenPayload(value: unknown): boolean {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).v === 1
 }
 
 function isStringRecord(value: unknown): value is PageTokenContext {

@@ -15,6 +15,12 @@ export default defineConfig({
         branches: 50,
         functions: 50,
         lines: 50,
+        'src/commands/**.ts': {
+          statements: 60,
+          branches: 50,
+          functions: 60,
+          lines: 60,
+        },
         'src/auth/**.ts': {
           statements: 70,
           branches: 65,

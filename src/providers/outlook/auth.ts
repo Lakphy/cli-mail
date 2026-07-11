@@ -46,13 +46,17 @@ export async function outlookAuthFlow(
     code_challenge: pkce.challenge,
   })
 
-  await openOrShowUrl(
-    authUrl,
-    options.launchBrowser ?? launchSystemBrowser,
-    options.onAuthorizationUrl,
-  )
-
-  const { code } = await callback.result
+  let code: string
+  try {
+    await openOrShowUrl(
+      authUrl,
+      options.launchBrowser ?? launchSystemBrowser,
+      options.onAuthorizationUrl,
+    )
+    ;({ code } = await callback.result)
+  } finally {
+    callback.server.close()
+  }
   const tokens = await exchangeCodeForTokens({
     provider: 'outlook',
     code,

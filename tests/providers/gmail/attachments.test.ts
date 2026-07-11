@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, test, vi, type Mock } from 'vitest'
@@ -140,5 +140,51 @@ describe('Gmail attachments provider', () => {
     })
     await downloadAttachment(client, 'm1', 'a1', output, { force: true })
     await expect(readFile(output, 'utf8')).resolves.toBe('new')
+  })
+
+  test('force replaces a destination symlink without modifying its target', async () => {
+    const client = createMockHttpClient()
+    ;(client.get as Mock).mockResolvedValue({
+      size: 3,
+      data: Buffer.from('new').toString('base64url'),
+    })
+    const directory = await mkdtemp(join(tmpdir(), 'cli-mail-attachment-'))
+    temporaryDirectories.push(directory)
+    const target = join(directory, 'target.bin')
+    const output = join(directory, 'output.bin')
+    await writeFile(target, 'old')
+    await symlink(target, output)
+
+    await expect(downloadAttachment(client, 'm1', 'a1', output)).rejects.toMatchObject({
+      code: 'EEXIST',
+    })
+    await expect(readFile(target, 'utf8')).resolves.toBe('old')
+
+    await downloadAttachment(client, 'm1', 'a1', output, { force: true })
+    await expect(readFile(target, 'utf8')).resolves.toBe('old')
+    await expect(readFile(output, 'utf8')).resolves.toBe('new')
+    await expect(lstat(output)).resolves.toMatchObject({})
+    expect((await lstat(output)).isSymbolicLink()).toBe(false)
+    expect((await readdir(directory)).some((name) => name.includes('.cli-mail-'))).toBe(false)
+  })
+
+  test('encodes both message and attachment ids in the content path', async () => {
+    const client = createMockHttpClient()
+    ;(client.get as Mock).mockResolvedValue({
+      size: 1,
+      data: Buffer.from('x').toString('base64url'),
+    })
+    const directory = await mkdtemp(join(tmpdir(), 'cli-mail-attachment-'))
+    temporaryDirectories.push(directory)
+
+    await downloadAttachment(
+      client,
+      '../message%2Fid?x#y',
+      '../attachment%2Fid?x#y',
+      join(directory, 'file.bin'),
+    )
+    expect(client.get).toHaveBeenCalledWith(
+      '/messages/..%2Fmessage%252Fid%3Fx%23y/attachments/..%2Fattachment%252Fid%3Fx%23y',
+    )
   })
 })

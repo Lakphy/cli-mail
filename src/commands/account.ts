@@ -14,9 +14,12 @@ import {
 } from '../config/store.js'
 import { deriveAccountCapabilities, type Provider } from '../config/types.js'
 import { gmailAuthFlow, readGmailDesktopCredentials } from '../providers/gmail/auth.js'
+import * as gmailProfile from '../providers/gmail/profile.js'
 import { outlookAuthFlow } from '../providers/outlook/auth.js'
-import { output, outputList, outputSuccess } from '../output/formatter.js'
-import { ConfigError, handleError } from '../utils/error.js'
+import { output, outputList, outputPartial, outputSuccess } from '../output/formatter.js'
+import { CliMailError, ConfigError, errorMessage, handleError } from '../utils/error.js'
+import { createClientForAccount } from './resolve.js'
+import pLimit from 'p-limit'
 
 interface AccountAuthOptions {
   alias?: string
@@ -177,44 +180,119 @@ export function accountRename(oldAlias: string, newAlias: string): void {
 
 export async function accountValidate(alias?: string): Promise<void> {
   try {
-    const config = loadConfig()
+    const initialConfig = loadConfig()
     const selected = alias
-      ? config.accounts.find((account) => account.alias === alias)
+      ? initialConfig.accounts.find((account) => account.alias === alias)
       : undefined
     if (alias && !selected) throw new ConfigError(`Account not found: ${alias}`)
-    const accounts = selected ? [selected] : config.accounts
+    const accounts = selected ? [selected] : initialConfig.accounts
+    const limit = pLimit(4)
+    const checks = await Promise.all(accounts.map((account) => limit(async () => {
+      if (account.status !== 'active') {
+        return {
+          id: account.id,
+          ok: false,
+          code: 'ACCOUNT_REAUTH_REQUIRED',
+          issue: `Reauthorize with: cli-mail account reauth ${account.alias}`,
+        }
+      }
+
+      try {
+        const client = createClientForAccount(account)
+        const remoteEmail = account.provider === 'gmail'
+          ? (await gmailProfile.getProfile(client)).emailAddress
+          : await getOutlookValidationEmail(client)
+        const identityMatch = normalizeEmail(remoteEmail) === normalizeEmail(account.email)
+        return identityMatch
+          ? { id: account.id, ok: true, remoteEmail, identityMatch: true as const }
+          : {
+              id: account.id,
+              ok: false,
+              remoteEmail,
+              identityMatch: false as const,
+              code: 'ACCOUNT_IDENTITY_MISMATCH',
+              issue: `Provider identity ${remoteEmail} does not match configured email ${account.email}`,
+            }
+      } catch (error) {
+        return {
+          id: account.id,
+          ok: false,
+          code: 'ACCOUNT_VALIDATION_FAILED',
+          issue: errorMessage(error),
+        }
+      }
+    })))
+
+    // A validation request may refresh and persist tokens. Reload before reporting
+    // expiry and capabilities so the result reflects the durable account state.
+    const config = loadConfig()
     const now = Date.now()
-    const results = accounts.map((account) => ({
-      id: account.id,
-      alias: account.alias,
-      email: account.email,
-      provider: account.provider,
-      status: account.status,
-      token_valid: account.status === 'active' && account.tokens.expires_at > now,
-      token_expires_at: account.tokens.expires_at
-        ? new Date(account.tokens.expires_at).toISOString()
-        : null,
-      alias_unique: config.accounts.filter((candidate) => candidate.alias === account.alias).length === 1,
-      capabilities: deriveAccountCapabilities(account),
-      ...(account.status === 'needs_reauth'
-        ? { issue: `Reauthorize with: cli-mail account reauth ${account.alias}` }
-        : {}),
-    }))
+    const results = checks.map((check) => {
+      const initial = accounts.find((account) => account.id === check.id)!
+      const account = config.accounts.find((candidate) => candidate.id === check.id) ?? initial
+      return {
+        id: account.id,
+        alias: account.alias,
+        email: account.email,
+        provider: account.provider,
+        status: account.status,
+        online_valid: check.ok,
+        token_valid: account.status === 'active' && account.tokens.expires_at > now,
+        token_expires_at: account.tokens.expires_at
+          ? new Date(account.tokens.expires_at).toISOString()
+          : null,
+        alias_unique: config.accounts.filter((candidate) => candidate.alias === account.alias).length === 1,
+        capabilities: deriveAccountCapabilities(account),
+        ...('remoteEmail' in check ? { remote_email: check.remoteEmail } : {}),
+        ...('identityMatch' in check ? { identity_match: check.identityMatch } : {}),
+        ...(!check.ok ? { issue: check.issue } : {}),
+      }
+    })
     const defaultValid = config.defaultAccountId === null
       ? config.accounts.length === 0
       : config.accounts.some((account) => account.id === config.defaultAccountId)
     const warnings = defaultValid
       ? []
       : [`Default account id "${config.defaultAccountId}" is not present in the account list.`]
-
-    output({
+    const payload = {
       defaultAccountId: config.defaultAccountId,
       defaultAccountValid: defaultValid,
       accounts: results,
-    }, { warnings })
+    }
+    const errors = checks.flatMap((check) => check.ok ? [] : [{
+      code: check.code ?? 'ACCOUNT_VALIDATION_FAILED',
+      message: check.issue ?? 'Account validation failed',
+      item: { id: check.id },
+    }])
+
+    if (errors.length === 0) {
+      output(payload, { warnings })
+    } else if (errors.length === checks.length) {
+      throw new CliMailError(
+        checks.length === 1 ? 'Account validation failed' : 'Every account validation failed',
+        'ACCOUNT_VALIDATION_FAILED',
+        undefined,
+        { accounts: results, errors },
+      )
+    } else {
+      outputPartial(payload, errors, { warnings })
+    }
   } catch (error) {
     handleError(error)
   }
+}
+
+async function getOutlookValidationEmail(client: ReturnType<typeof createClientForAccount>): Promise<string> {
+  const user = await client.get<{ mail?: string | null; userPrincipalName?: string | null }>('', {
+    $select: 'mail,userPrincipalName',
+  })
+  const email = user.mail || user.userPrincipalName
+  if (!email) throw new ConfigError('Outlook profile did not return an email identity')
+  return email
+}
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase()
 }
 
 export function accountTag(alias: string, tag?: string, remove?: boolean): void {
@@ -259,7 +337,8 @@ async function authorize(provider: Provider, options: AccountAuthOptions) {
     if (options.clientId) throw new ConfigError('Use --credentials-file, not --client-id, for Gmail')
     const credentials = readGmailDesktopCredentials(options.credentialsFile)
     const result = await gmailAuthFlow({
-      credentialsFile: options.credentialsFile,
+      clientId: credentials.clientId,
+      clientSecret: credentials.clientSecret,
       fullAccess: options.fullAccess,
     })
     return { ...result, ...credentials }

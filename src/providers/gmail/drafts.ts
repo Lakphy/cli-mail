@@ -23,6 +23,7 @@ import {
 import { CliMailError } from '../../utils/error.js'
 import {
   extractGmailAttachments,
+  encodeGmailPathSegment,
   headersToRecord,
   normalizeInternalDate,
   settledMapWithConcurrency,
@@ -86,10 +87,13 @@ export async function listDrafts(
   const settled = await settledMapWithConcurrency(
     listed,
     DETAIL_CONCURRENCY,
-    (draft) => client.get<GmailDraft>(`/drafts/${draft.id}`, {
-      format: 'metadata',
-      metadataHeaders: ['To', 'Subject', 'Date'],
-    }),
+    (draft) => client.get<GmailDraft>(
+      `/drafts/${encodeGmailPathSegment(draft.id)}`,
+      {
+        format: 'metadata',
+        metadataHeaders: ['To', 'Subject', 'Date'],
+      },
+    ),
   )
   const { values, errors } = settledValuesAndErrors(
     listed.map((draft) => draft.id),
@@ -107,7 +111,10 @@ export async function getDraft(
   client: HttpClient,
   id: string,
 ): Promise<GmailDraftDetail> {
-  const draft = await client.get<GmailDraft>(`/drafts/${id}`, { format: 'full' })
+  const draft = await client.get<GmailDraft>(
+    `/drafts/${encodeGmailPathSegment(id)}`,
+    { format: 'full' },
+  )
   return normalizeDraftDetail(draft)
 }
 
@@ -161,7 +168,8 @@ export async function updateDraft(
 
   // Fetch raw instead of normalizing through the summary DTO. This retains
   // attachment bytes, HTML alternatives, reply-chain headers and threadId.
-  const current = await client.get<GmailDraft>(`/drafts/${id}`, { format: 'raw' })
+  const encodedId = encodeGmailPathSegment(id)
+  const current = await client.get<GmailDraft>(`/drafts/${encodedId}`, { format: 'raw' })
   if (!current.message.raw) {
     throw new CliMailError('Gmail returned a draft without raw MIME.', 'INVALID_DRAFT')
   }
@@ -214,7 +222,7 @@ export async function updateDraft(
     attachments,
   })
 
-  const result = await client.put<GmailDraft>(`/drafts/${id}`, {
+  const result = await client.put<GmailDraft>(`/drafts/${encodedId}`, {
     message: {
       raw: toBase64Url(mime),
       threadId: current.message.threadId,
@@ -231,7 +239,7 @@ export async function sendDraft(
 }
 
 export async function deleteDraft(client: HttpClient, id: string): Promise<void> {
-  await client.delete(`/drafts/${id}`)
+  await client.delete(`/drafts/${encodeGmailPathSegment(id)}`)
 }
 
 function normalizeDraftSummary(draft: GmailDraft): DraftSummary {

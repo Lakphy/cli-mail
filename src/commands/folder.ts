@@ -6,7 +6,12 @@ import { ConfigError, handleError } from '../utils/error.js'
 import * as gmailLabels from '../providers/gmail/labels.js'
 import * as gmailMessages from '../providers/gmail/messages.js'
 import * as outlookFolders from '../providers/outlook/folders.js'
-import { decodePageToken, encodePageToken } from '../utils/page-token.js'
+import {
+  createPageTokenContext,
+  decodePageTokenState,
+  encodePageToken,
+  resolvePageTokenOption,
+} from '../utils/page-token.js'
 import { messageListColumns, messageRows, outputPageResult } from './shared.js'
 
 export async function folderList(opts: { parent?: string; top?: string; pageToken?: string; account?: string }): Promise<void> {
@@ -31,12 +36,14 @@ export async function folderList(opts: { parent?: string; top?: string; pageToke
         ],
       )
     } else {
-      const operation = `folder.list:${opts.parent ?? ''}`
-      const pageToken = decodePageToken(opts.pageToken, account, operation)
+      const operation = 'folder.list'
+      const pageState = decodePageTokenState(opts.pageToken, account, operation)
+      const parent = resolvePageTokenOption(pageState, 'parent', opts.parent)
+      const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '100'
       const result = await outlookFolders.listFoldersPage(client, {
-        parentId: opts.parent,
-        top: opts.top ? parseInt(opts.top, 10) : 100,
-        pageToken,
+        parentId: parent,
+        top: parseInt(topValue, 10),
+        pageToken: pageState?.cursor,
       })
       outputList(
         result.folders.map((f) => ({
@@ -53,7 +60,12 @@ export async function folderList(opts: { parent?: string; top?: string; pageToke
           { key: 'unread', label: 'Unread' },
           { key: 'children', label: 'Children' },
         ],
-        { meta: { nextToken: encodePageToken(account, operation, result.nextPageToken) } },
+        { meta: { nextToken: encodePageToken(
+          account,
+          operation,
+          result.nextPageToken,
+          createPageTokenContext({ parent, top: topValue }),
+        ) } },
       )
     }
   } catch (error) {
@@ -117,18 +129,26 @@ export async function folderDelete(id: string, opts: { account?: string }): Prom
   }
 }
 
-export async function folderMessages(id: string, opts: { top?: string; pageToken?: string; account?: string }): Promise<void> {
+export async function folderMessages(id: string | undefined, opts: { top?: string; pageToken?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const top = opts.top ? parseInt(opts.top, 10) : 20
-    const operation = `folder.messages:${id}`
-    const pageToken = decodePageToken(opts.pageToken, account, operation)
+    const operation = 'folder.messages'
+    const pageState = decodePageTokenState(opts.pageToken, account, operation)
+    const label = resolvePageTokenOption(pageState, 'label', id, 'folder/label id')
+    if (!label) throw new ConfigError('A folder/label id is required on the first page')
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
+    const top = parseInt(topValue, 10)
 
     const result = account.provider === 'gmail'
-      ? await gmailMessages.listMessages(client, { folder: id, top, pageToken })
-      : await outlookFolders.listFolderMessages(client, id, { top, pageToken })
+      ? await gmailMessages.listMessages(client, { folder: label, top, pageToken: pageState?.cursor })
+      : await outlookFolders.listFolderMessages(client, label, { top, pageToken: pageState?.cursor })
     outputPageResult(messageRows(result.messages), messageListColumns, {
-      meta: { nextToken: encodePageToken(account, operation, result.nextPageToken) },
+      meta: { nextToken: encodePageToken(
+        account,
+        operation,
+        result.nextPageToken,
+        createPageTokenContext({ label, top: topValue }),
+      ) },
       errors: 'errors' in result ? result.errors : undefined,
       failCode: 'MESSAGE_PAGE_FAILED',
       failMessage: 'Failed to fetch every message in this folder page',

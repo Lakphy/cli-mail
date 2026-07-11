@@ -11,7 +11,12 @@ export function createGmailClient(account: AccountConfig): HttpClient {
 
   return new HttpClient({
     baseUrl: GMAIL_BASE_URL,
-    accountAlias: account.alias,
+    accountIdentity: {
+      id: account.id,
+      alias: account.alias,
+      provider: account.provider,
+      clientId: account.client_id,
+    },
     isRetryableForbidden: isGmailQuotaError,
     getTokens: () => currentTokens,
     refreshTokens: async (): Promise<OAuthTokens> => {

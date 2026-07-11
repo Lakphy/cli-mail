@@ -29,6 +29,22 @@ export interface GmailItemError {
   message: string
 }
 
+/**
+ * Encode one opaque Gmail resource identifier for use in a URL path.
+ *
+ * `encodeURIComponent` deliberately leaves a bare `.` or `..` unchanged,
+ * which a URL parser can still interpret as a dot segment. Encode those two
+ * exceptional values with a second layer so WHATWG URL parsing cannot
+ * normalize them away before the request is sent. Such pathological resource
+ * IDs safely fail lookup instead of escaping the Gmail API base path.
+ */
+export function encodeGmailPathSegment(value: string): string {
+  const encoded = encodeURIComponent(value)
+  if (encoded === '.') return '%252E'
+  if (encoded === '..') return '%252E%252E'
+  return encoded
+}
+
 /** Map while preserving input order and never exceeding the requested limit. */
 export async function settledMapWithConcurrency<T, R>(
   values: readonly T[],

@@ -4,6 +4,7 @@ import type { HttpClient } from '../../utils/http.js'
 import type { MailboxSettings } from '../types.js'
 import { z } from 'zod'
 import { CliMailError, ConfigError, errorMessage } from '../../utils/error.js'
+import { encodeGmailPathSegment } from './helpers.js'
 
 interface GmailVacationSettings {
   enableAutoReply: boolean
@@ -229,7 +230,7 @@ export async function updateSettings(
     if (key === 'vacation') {
       return putVacationSettings(client, settings)
     }
-    return client.put(`/settings/${key}`, settings)
+    return client.put(`/settings/${encodeGmailPathSegment(key)}`, settings)
   }))
   const errors = settled.flatMap((result, index): GmailSettingsError[] => (
     result.status === 'rejected'
@@ -278,7 +279,9 @@ export async function getSendAsAliases(client: HttpClient): Promise<string[]> {
 }
 
 export async function getSendAs(client: HttpClient, email: string): Promise<GmailSendAs> {
-  return client.get<GmailSendAs>(`/settings/sendAs/${encodeURIComponent(email)}`)
+  return client.get<GmailSendAs>(
+    `/settings/sendAs/${encodeGmailPathSegment(email)}`,
+  )
 }
 
 // --- Forwarding addresses ---

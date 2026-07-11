@@ -2,7 +2,7 @@
 
 import type { HttpClient } from '../../utils/http.js'
 import type { FolderInfo } from '../types.js'
-import { settledMapWithConcurrency } from './helpers.js'
+import { encodeGmailPathSegment, settledMapWithConcurrency } from './helpers.js'
 
 const DETAIL_CONCURRENCY = 8
 
@@ -39,7 +39,7 @@ export async function listLabels(
   const details = await settledMapWithConcurrency(
     labels,
     DETAIL_CONCURRENCY,
-    (label) => client.get<GmailLabel>(`/labels/${label.id}`),
+    (label) => client.get<GmailLabel>(`/labels/${encodeGmailPathSegment(label.id)}`),
   )
   return labels.map((label, index) => {
     const detail = details[index]
@@ -50,7 +50,7 @@ export async function listLabels(
 }
 
 export async function getLabel(client: HttpClient, id: string): Promise<FolderInfo> {
-  const label = await client.get<GmailLabel>(`/labels/${id}`)
+  const label = await client.get<GmailLabel>(`/labels/${encodeGmailPathSegment(id)}`)
   return normalizeLabel(label, true)
 }
 
@@ -59,7 +59,10 @@ export async function createLabel(
   name: string,
   parent?: string,
 ): Promise<FolderInfo> {
-  const nestedName = parent ? `${parent}/${name}` : name
+  const parentLabel = parent
+    ? await client.get<GmailLabel>(`/labels/${encodeGmailPathSegment(parent)}`)
+    : undefined
+  const nestedName = parentLabel ? `${parentLabel.name}/${name}` : name
   const label = await client.post<GmailLabel>('/labels', {
     name: nestedName,
     labelListVisibility: 'labelShow',
@@ -73,7 +76,10 @@ export async function updateLabel(
   id: string,
   name: string,
 ): Promise<FolderInfo> {
-  const label = await client.patch<GmailLabel>(`/labels/${id}`, { name })
+  const label = await client.patch<GmailLabel>(
+    `/labels/${encodeGmailPathSegment(id)}`,
+    { name },
+  )
   return normalizeLabel(label, true)
 }
 
@@ -81,7 +87,7 @@ export async function deleteLabel(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/labels/${id}`)
+  await client.delete(`/labels/${encodeGmailPathSegment(id)}`)
 }
 
 function normalizeLabel(label: GmailLabel, includeCounts: boolean): FolderInfo {

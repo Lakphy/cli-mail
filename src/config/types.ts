@@ -34,6 +34,18 @@ export interface AccountConfig {
   updated_at: string
 }
 
+/**
+ * Immutable account binding captured by an HTTP client.  The alias is kept
+ * only for human-readable diagnostics; token writes are keyed by `id` and
+ * guarded by the provider/client binding that produced the refresh token.
+ */
+export interface AccountTokenIdentity {
+  id: string
+  alias: string
+  provider: Provider
+  clientId: string
+}
+
 export interface AppConfig {
   version: typeof CONFIG_VERSION
   defaultAccountId: string | null

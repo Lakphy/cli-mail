@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCli } from '../src/run'
 import { setGlobalFormat } from '../src/output/formatter'
-import { _resetGlobalAccount } from '../src/cli'
-import { createAccount, resetConfigPath, setConfigPath } from '../src/config/store'
+import { _resetGlobalAccount, getGlobalAccount } from '../src/cli'
+import { createAccount, getConfigPath, resetConfigPath, setConfigPath } from '../src/config/store'
 
 describe('CLI process boundary', () => {
   let stdout = ''
@@ -70,6 +70,19 @@ describe('CLI process boundary', () => {
     await runCli(['node', 'cli-mail', '-fjson', 'does-not-exist'])
     expect(JSON.parse(stdout).error.code).toBe('CLI_USAGE_ERROR')
     expect(stderr).toBe('')
+  })
+
+  test('resets mutable invocation state between programmatic runs', async () => {
+    resetConfigPath()
+    const defaultConfigPath = getConfigPath()
+    setConfigPath('/tmp/cli-mail-stale/accounts.json')
+    process.exitCode = 2
+
+    await runCli(['node', 'cli-mail', '--account', 'stale', '--help'])
+
+    expect(getGlobalAccount()).toBeUndefined()
+    expect(getConfigPath()).toBe(defaultConfigPath)
+    expect(process.exitCode).toBeUndefined()
   })
 
   test('rejects invalid numeric options before a provider request', async () => {

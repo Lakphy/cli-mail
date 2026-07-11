@@ -225,6 +225,20 @@ describe('MIME Utilities', () => {
       expect(extractBodyFromPayload(payload).body).toBe('Plain text')
     })
 
+    test('prefers plain text even when an alternative lists HTML first', () => {
+      const payload = {
+        mimeType: 'multipart/alternative',
+        parts: [
+          { mimeType: 'text/html', body: { data: toBase64Url('<p>HTML</p>') } },
+          { mimeType: 'text/plain', body: { data: toBase64Url('Plain text') } },
+        ],
+      }
+      expect(extractBodyFromPayload(payload)).toEqual({
+        body: 'Plain text',
+        bodyType: 'text',
+      })
+    })
+
     test('falls back to text/html', () => {
       const payload = {
         mimeType: 'multipart/alternative',
@@ -273,6 +287,73 @@ describe('MIME Utilities', () => {
         ],
       }
       expect(extractBodyFromPayload(payload).body).toBe('Body text')
+    })
+
+    test('multipart/mixed uses the first eligible body in document order', () => {
+      const payload = {
+        mimeType: 'multipart/mixed',
+        parts: [
+          { mimeType: 'text/html', body: { data: toBase64Url('<p>First</p>') } },
+          { mimeType: 'text/plain', body: { data: toBase64Url('Second') } },
+        ],
+      }
+      expect(extractBodyFromPayload(payload)).toEqual({
+        body: '<p>First</p>',
+        bodyType: 'html',
+      })
+    })
+
+    test('excludes an attachment container and its entire subtree', () => {
+      const payload = {
+        mimeType: 'multipart/mixed',
+        parts: [
+          {
+            mimeType: 'multipart/alternative',
+            filename: 'attached.eml',
+            parts: [{
+              mimeType: 'text/plain',
+              body: { data: toBase64Url('Attached message body') },
+            }],
+          },
+          { mimeType: 'text/plain', body: { data: toBase64Url('Outer body') } },
+        ],
+      }
+      expect(extractBodyFromPayload(payload).body).toBe('Outer body')
+    })
+
+    test('excludes Content-Disposition attachment subtrees without filenames', () => {
+      const payload = {
+        mimeType: 'multipart/mixed',
+        parts: [
+          {
+            mimeType: 'multipart/alternative',
+            headers: [{ name: 'Content-Disposition', value: 'ATTACHMENT; size=20' }],
+            parts: [{
+              mimeType: 'text/plain',
+              body: { data: toBase64Url('Attached body') },
+            }],
+          },
+          { mimeType: 'text/plain', body: { data: toBase64Url('Outer body') } },
+        ],
+      }
+      expect(extractBodyFromPayload(payload).body).toBe('Outer body')
+    })
+
+    test('never treats an encapsulated RFC 822 message as the outer body', () => {
+      const payload = {
+        mimeType: 'multipart/mixed',
+        parts: [
+          {
+            mimeType: 'message/rfc822',
+            parts: [{
+              mimeType: 'text/plain',
+              body: { data: toBase64Url('Nested message') },
+            }],
+          },
+          { mimeType: 'text/plain', body: { data: toBase64Url('Outer body') } },
+        ],
+      }
+      expect(extractBodyFromPayload(payload).body).toBe('Outer body')
     })
 
     test('returns the body type matching the selected plain alternative', () => {

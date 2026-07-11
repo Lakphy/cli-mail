@@ -29,4 +29,20 @@ describe('async Commander actions', () => {
     await parsing
     expect(completed).toBe(true)
   })
+
+  test('passes Outlook external audience through Commander', async () => {
+    mocks.vacationSet.mockResolvedValue(undefined)
+
+    await createCli().parseAsync([
+      'node', 'cli-mail',
+      'settings', 'vacation', 'set',
+      '--enabled',
+      '--external-audience', 'contactsOnly',
+    ])
+
+    expect(mocks.vacationSet).toHaveBeenCalledWith(expect.objectContaining({
+      enabled: true,
+      externalAudience: 'contactsOnly',
+    }))
+  })
 })

@@ -113,12 +113,19 @@ export async function gmailAuthFlow(
     fullAccess: resolvedOptions.fullAccess,
   })
 
-  await openOrShowUrl(
-    authUrl,
-    resolvedOptions.launchBrowser ?? launchSystemBrowser,
-    resolvedOptions.onAuthorizationUrl,
-  )
-  const { code } = await callback.result
+  let code: string
+  try {
+    await openOrShowUrl(
+      authUrl,
+      resolvedOptions.launchBrowser ?? launchSystemBrowser,
+      resolvedOptions.onAuthorizationUrl,
+    )
+    ;({ code } = await callback.result)
+  } finally {
+    // The callback normally closes itself when it settles. Closing here also
+    // covers browser/onAuthorizationUrl failures before a callback arrives.
+    callback.server.close()
+  }
   const tokens = await exchangeCodeForTokens({
     provider: 'gmail',
     code,

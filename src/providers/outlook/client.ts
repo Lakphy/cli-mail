@@ -11,7 +11,12 @@ export function createOutlookClient(account: AccountConfig): HttpClient {
 
   return new HttpClient({
     baseUrl: GRAPH_BASE_URL,
-    accountAlias: account.alias,
+    accountIdentity: {
+      id: account.id,
+      alias: account.alias,
+      provider: account.provider,
+      clientId: account.client_id,
+    },
     // Outlook item IDs otherwise change when a message is moved. This header
     // must be present on every request that returns or consumes an item ID.
     defaultHeaders: {

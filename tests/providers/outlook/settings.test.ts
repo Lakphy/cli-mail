@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi, type Mock } from 'vitest'
 import { createMockHttpClient } from '../../helpers'
-import { setAutoReply } from '../../../src/providers/outlook/settings'
+import { getAutoReply, getSettings, setAutoReply } from '../../../src/providers/outlook/settings'
 
 describe('Outlook automatic replies', () => {
   const mockClient = createMockHttpClient()
@@ -13,8 +13,47 @@ describe('Outlook automatic replies', () => {
       automaticRepliesSetting: {
         status: 'alwaysEnabled',
         internalReplyMessage: 'Away',
-        externalReplyMessage: '',
       },
+    })
+  })
+
+  test('omits unspecified messages and external audience so Graph preserves them', async () => {
+    await setAutoReply(mockClient, { enabled: false })
+
+    expect(mockClient.patch).toHaveBeenCalledWith('/mailboxSettings', {
+      automaticRepliesSetting: { status: 'disabled' },
+    })
+  })
+
+  test.each(['none', 'contactsOnly', 'all'] as const)(
+    'passes through the supported external audience value %s',
+    async (externalAudience) => {
+      await setAutoReply(mockClient, { enabled: true, externalAudience })
+      expect(mockClient.patch).toHaveBeenCalledWith('/mailboxSettings', {
+        automaticRepliesSetting: {
+          status: 'alwaysEnabled',
+          externalAudience,
+        },
+      })
+    },
+  )
+
+  test('returns externalAudience from focused and full settings reads', async () => {
+    const automaticRepliesSetting = {
+      status: 'alwaysEnabled',
+      internalReplyMessage: 'Internal',
+      externalReplyMessage: 'External',
+      externalAudience: 'contactsOnly',
+    }
+    ;(mockClient.get as Mock)
+      .mockResolvedValueOnce(automaticRepliesSetting)
+      .mockResolvedValueOnce({ automaticRepliesSetting })
+
+    await expect(getAutoReply(mockClient)).resolves.toMatchObject({
+      externalAudience: 'contactsOnly',
+    })
+    await expect(getSettings(mockClient)).resolves.toMatchObject({
+      automaticReplies: { externalAudience: 'contactsOnly' },
     })
   })
 
@@ -79,6 +118,10 @@ describe('Outlook automatic replies', () => {
     await expect(setAutoReply(mockClient, {
       enabled: true,
       automaticRepliesSetting: { status: 'alwaysEnabled' },
+    })).rejects.toMatchObject({ code: 'CONFIG_ERROR' })
+    await expect(setAutoReply(mockClient, {
+      enabled: true,
+      externalAudience: 'everyone',
     })).rejects.toMatchObject({ code: 'CONFIG_ERROR' })
     expect(mockClient.patch).not.toHaveBeenCalled()
   })

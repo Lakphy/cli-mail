@@ -8,6 +8,7 @@ import {
 } from '../../utils/mime.js'
 import {
   normalizeMessageSummary,
+  encodeGmailPathSegment,
   settledMapWithConcurrency,
   settledValuesAndErrors,
   type GmailItemError,
@@ -84,10 +85,13 @@ export async function listThreads(
   const settled = await settledMapWithConcurrency(
     list.threads,
     DETAIL_CONCURRENCY,
-    (thread) => client.get<GmailThread>(`/threads/${thread.id}`, {
-      format: 'metadata',
-      metadataHeaders: ['Subject', 'Date'],
-    }),
+    (thread) => client.get<GmailThread>(
+      `/threads/${encodeGmailPathSegment(thread.id)}`,
+      {
+        format: 'metadata',
+        metadataHeaders: ['Subject', 'Date'],
+      },
+    ),
   )
   const { values, errors } = settledValuesAndErrors(
     list.threads.map((thread) => thread.id),
@@ -105,7 +109,10 @@ export async function getThread(
   client: HttpClient,
   id: string,
 ): Promise<ThreadDetail> {
-  const thread = await client.get<GmailThread>(`/threads/${id}`, { format: 'full' })
+  const thread = await client.get<GmailThread>(
+    `/threads/${encodeGmailPathSegment(id)}`,
+    { format: 'full' },
+  )
   return {
     id: thread.id,
     messages: (thread.messages || []).map(normalizeMessageSummary),
@@ -118,7 +125,7 @@ export async function modifyThread(
   addLabels?: string[],
   removeLabels?: string[],
 ): Promise<void> {
-  await client.post(`/threads/${id}/modify`, {
+  await client.post(`/threads/${encodeGmailPathSegment(id)}/modify`, {
     addLabelIds: addLabels || [],
     removeLabelIds: removeLabels || [],
   })
@@ -128,21 +135,21 @@ export async function trashThread(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.post(`/threads/${id}/trash`)
+  await client.post(`/threads/${encodeGmailPathSegment(id)}/trash`)
 }
 
 export async function untrashThread(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.post(`/threads/${id}/untrash`)
+  await client.post(`/threads/${encodeGmailPathSegment(id)}/untrash`)
 }
 
 export async function deleteThread(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/threads/${id}`)
+  await client.delete(`/threads/${encodeGmailPathSegment(id)}`)
 }
 
 function normalizeThreadSummary(thread: GmailThread): ThreadSummary {

@@ -2,8 +2,15 @@ import { Command, CommanderError } from 'commander'
 import { createCli } from './cli.js'
 import { output, outputFailure, setGlobalFormat, type OutputFormat } from './output/formatter.js'
 import { errorMessage, HandledCliError, toErrorPayload } from './utils/error.js'
+import { resetConfigPath } from './config/store.js'
+import { resetGlobalAccount } from './config/context.js'
 
 export async function runCli(argv: readonly string[] = process.argv): Promise<void> {
+  // runCli is also a programmatic entry point. Keep repeated invocations
+  // independent instead of inheriting a previous command's mutable globals.
+  process.exitCode = undefined
+  resetConfigPath()
+  resetGlobalAccount()
   const format = detectFormat(argv)
   setGlobalFormat(format)
 

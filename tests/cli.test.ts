@@ -150,6 +150,30 @@ describe('CLI', () => {
     expect(optionFlags).toContain('--page-token')
   })
 
+  test('paginated commands leave top defaults to context-aware handlers', () => {
+    const program = createCli()
+    const commandPairs = [
+      ['message', 'list'],
+      ['message', 'search'],
+      ['message', 'recent'],
+      ['draft', 'list'],
+      ['folder', 'list'],
+      ['folder', 'messages'],
+      ['thread', 'list'],
+    ]
+    for (const [parent, child] of commandPairs) {
+      const command = program.commands.find((item) => item.name() === parent)
+        ?.commands.find((item) => item.name() === child)
+      expect(command?.options.find((option) => option.long === '--top')?.defaultValue).toBeUndefined()
+    }
+
+    const search = program.commands.find((item) => item.name() === 'message')
+      ?.commands.find((item) => item.name() === 'search')
+    expect(search?.options.find((option) => option.long === '--query')?.mandatory).toBe(false)
+    const history = program.commands.find((item) => item.name() === 'history')
+    expect(history?.options.find((option) => option.long === '--start-history-id')?.mandatory).toBe(false)
+  })
+
   test('message send has all required and optional flags', () => {
     const program = createCli()
     const msgCmd = program.commands.find((c) => c.name() === 'message')
@@ -230,7 +254,7 @@ describe('CLI', () => {
     expect(profileCmd?.options.map((o) => o.long)).toContain('--account')
   })
 
-  test('history command has all required options', () => {
+  test('history command has all pagination options', () => {
     const program = createCli()
     const histCmd = program.commands.find((c) => c.name() === 'history')
     expect(histCmd).toBeDefined()

@@ -3,6 +3,7 @@ import { createMockHttpClient } from '../../helpers'
 import {
   listMessages,
   listMessagesSince,
+  listInboxMessagesSince,
   getMessage,
   getMessageRaw,
   sendMessage,
@@ -73,6 +74,29 @@ describe('Gmail Messages Provider', () => {
       maxResults: 7,
       pageToken: 'next',
     }))
+  })
+
+  test('listInboxMessagesSince scopes the Gmail query to INBOX', async () => {
+    ;(mockClient.get as Mock).mockResolvedValueOnce({ messages: [] })
+    await listInboxMessagesSince(
+      mockClient,
+      new Date('2026-07-11T00:00:00.000Z'),
+      7,
+      'next',
+    )
+    expect(mockClient.get).toHaveBeenCalledWith('/messages', expect.objectContaining({
+      q: 'after:1783728000',
+      labelIds: 'INBOX',
+      maxResults: 7,
+      pageToken: 'next',
+    }))
+  })
+
+  test('listMessages rejects numeric skip instead of silently ignoring it', async () => {
+    await expect(listMessages(mockClient, { skip: 0 })).rejects.toMatchObject({
+      code: 'CONFIG_ERROR',
+    })
+    expect(mockClient.get).not.toHaveBeenCalled()
   })
 
   test('listMessages detects attachments from the full MIME part tree', async () => {
@@ -146,6 +170,17 @@ describe('Gmail Messages Provider', () => {
     const result = await getMessage(mockClient, 'msg1')
     expect(mockClient.get).toHaveBeenCalledWith('/messages/msg1', { format: 'full' })
     expect(result.id).toBe('msg1')
+  })
+
+  test('encodes opaque message ids before adding them to REST paths', async () => {
+    const id = '../escape%2Fchild?format=raw#fragment'
+    ;(mockClient.get as Mock).mockResolvedValueOnce({ id, threadId: 't1' })
+
+    await getMessage(mockClient, id)
+    expect(mockClient.get).toHaveBeenCalledWith(
+      '/messages/..%2Fescape%252Fchild%3Fformat%3Draw%23fragment',
+      { format: 'full' },
+    )
   })
 
   test('sendMessage constructs MIME and calls /messages/send', async () => {
@@ -334,12 +369,12 @@ describe('Gmail Messages Provider', () => {
     })
   })
 
-  test('insertMessage calls /messages/insert', async () => {
+  test('insertMessage calls the Gmail users.messages.insert endpoint', async () => {
     vi.mocked(mimeUtils.toBase64Url).mockReturnValue('base64')
     ;(mockClient.post as Mock).mockResolvedValueOnce({ id: 'inserted-msg' })
 
     const result = await insertMessage(mockClient, 'raw-text')
-    expect(mockClient.post).toHaveBeenCalledWith('/messages/insert', { raw: 'base64' })
+    expect(mockClient.post).toHaveBeenCalledWith('/messages', { raw: 'base64' })
     expect(result.id).toBe('inserted-msg')
   })
 

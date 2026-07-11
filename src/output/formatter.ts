@@ -56,6 +56,7 @@ export function output(
   }
 
   process.stdout.write(`${formatAsMarkdown(data)}\n`)
+  writeMarkdownMeta(options.meta)
   writeMarkdownWarnings(options.warnings)
 }
 
@@ -141,6 +142,7 @@ export function outputPartial(
   for (const error of errors) {
     process.stderr.write(`> ⚠ **${terminalSafe(error.code)}**: ${terminalSafe(redactText(error.message))}\n`)
   }
+  writeMarkdownMeta(options.meta)
   writeMarkdownWarnings(options.warnings)
 }
 

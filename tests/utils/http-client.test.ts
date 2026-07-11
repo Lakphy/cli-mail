@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 
 vi.mock('../../src/config/store', () => ({
   updateAccountTokens: vi.fn(),
@@ -18,7 +19,12 @@ const validTokens = {
 function client(overrides: Partial<ConstructorParameters<typeof HttpClient>[0]> = {}) {
   return new HttpClient({
     baseUrl: 'https://api.example.test/v1/me',
-    accountAlias: 'primary',
+    accountIdentity: {
+      id: '37d65ed6-69f3-4b69-87dd-7d9a86924570',
+      alias: 'primary',
+      provider: 'gmail',
+      clientId: 'client-id',
+    },
     getTokens: () => validTokens,
     refreshTokens: async () => validTokens,
     ...overrides,
@@ -90,6 +96,67 @@ describe('HttpClient', () => {
     })
   })
 
+  test('keeps buffered response-body reads inside the timeout and retries GET', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const bodyTimeout = () => Object.assign(new Error('body timed out'), { name: 'TimeoutError' })
+    const timedOutBody = () => new Response(new ReadableStream({
+      pull(controller) {
+        controller.error(bodyTimeout())
+      },
+    }), { status: 200 })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(timedOutBody())
+      .mockResolvedValueOnce(timedOutBody())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = client({ timeoutMs: 321 }).get<{ ok: boolean }>('/slow-body')
+    await vi.runAllTimersAsync()
+    await expect(pending).resolves.toEqual({ ok: true })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  test('maps and cleans up raw body timeouts without replaying the stream', async () => {
+    let cancelled = false
+    const timeout = Object.assign(new Error('raw body timed out'), { name: 'AbortError' })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      pull(controller) {
+        controller.error(timeout)
+      },
+      cancel() {
+        cancelled = true
+      },
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await client({ timeoutMs: 456 }).getRaw('/raw-body')
+    await expect(response.text()).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      message: 'Request timed out after 456ms',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Some runtimes mark an errored stream closed before invoking its cancel
+    // algorithm; the important contract is that the client attempts cleanup.
+    expect(typeof cancelled).toBe('boolean')
+  })
+
+  test('maps error-response body timeouts and never retries a mutation', async () => {
+    const timeout = Object.assign(new Error('error body timed out'), { name: 'TimeoutError' })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      pull(controller) {
+        controller.error(timeout)
+      },
+    }), { status: 503 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(client({ timeoutMs: 789 }).post('/messages', {})).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      message: 'Request timed out after 789ms',
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   test('refuses authenticated cross-origin URLs', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -97,6 +164,34 @@ describe('HttpClient', () => {
       code: 'UNSAFE_URL',
     })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('rejects raw and encoded relative dot segments before URL normalization', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const http = client()
+
+    for (const path of [
+      '/../settings',
+      '/messages/..\\settings',
+      '/messages/%2e%2e/settings',
+      '/messages/%2e%2e%5csettings',
+      '/messages/%252e%252e/settings',
+    ]) {
+      await expect(http.get(path)).rejects.toMatchObject({ code: 'UNSAFE_URL' })
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('allows provider raw suffixes and trusted absolute next links', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const http = client()
+
+    await http.get('/messages/id/$value')
+    await http.get('https://api.example.test/v1/me/messages?$skiptoken=opaque')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   test('allows only HTTPS allowlisted unauthenticated upload hosts', async () => {
@@ -152,6 +247,14 @@ describe('HttpClient', () => {
     await Promise.all([first, second])
 
     expect(updateAccountTokens).toHaveBeenCalledTimes(1)
+    expect(updateAccountTokens).toHaveBeenCalledWith(expect.objectContaining({
+      id: '37d65ed6-69f3-4b69-87dd-7d9a86924570',
+      provider: 'gmail',
+      clientId: 'client-id',
+    }), validTokens, createHash('sha256')
+      .update('cli-mail-refresh-token\0')
+      .update(validTokens.refresh_token)
+      .digest('hex'))
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 

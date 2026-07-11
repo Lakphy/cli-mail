@@ -5,25 +5,35 @@ import { output, outputSuccess } from '../output/formatter.js'
 import { ConfigError, handleError } from '../utils/error.js'
 import * as gmailDrafts from '../providers/gmail/drafts.js'
 import * as outlookDrafts from '../providers/outlook/drafts.js'
-import { decodePageToken, encodePageToken } from '../utils/page-token.js'
+import {
+  decodePageTokenState,
+  encodePageToken,
+  resolvePageTokenOption,
+} from '../utils/page-token.js'
 import { outputPageResult } from './shared.js'
 
 export async function draftList(opts: { top?: string; pageToken?: string; account?: string }): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const top = opts.top ? parseInt(opts.top, 10) : 20
-    const pageToken = decodePageToken(opts.pageToken, account, 'draft.list')
+    const pageState = decodePageTokenState(opts.pageToken, account, 'draft.list')
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
+    const top = parseInt(topValue, 10)
 
     const result = account.provider === 'gmail'
-      ? await gmailDrafts.listDrafts(client, { top, pageToken })
-      : await outlookDrafts.listDrafts(client, { top, pageToken })
+      ? await gmailDrafts.listDrafts(client, { top, pageToken: pageState?.cursor })
+      : await outlookDrafts.listDrafts(client, { top, pageToken: pageState?.cursor })
     const items = result.drafts.map((draft) => ({
       id: draft.id,
       subject: draft.subject,
       to: draft.to.map((address) => address.address).join(', '),
       snippet: draft.snippet,
     }))
-    const meta = { nextToken: encodePageToken(account, 'draft.list', result.nextPageToken) }
+    const meta = { nextToken: encodePageToken(
+      account,
+      'draft.list',
+      result.nextPageToken,
+      { top: topValue },
+    ) }
     const columns = [
       { key: 'id', label: 'ID' },
       { key: 'subject', label: 'Subject' },
@@ -105,6 +115,9 @@ export async function draftUpdate(id: string, opts: DraftUpdateOpts): Promise<vo
       && opts.bcc === undefined
       && opts.bodyType === undefined) {
       throw new ConfigError('Provide at least one draft field to update')
+    }
+    if (opts.bodyType !== undefined && opts.body === undefined) {
+      throw new ConfigError('--body-type requires --body when updating a draft')
     }
     const { account, client } = resolveAccount(opts.account)
     const updateOpts = {

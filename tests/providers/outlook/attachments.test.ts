@@ -24,6 +24,7 @@ import {
   UPLOAD_CHUNK_SIZE,
 } from '../../../src/providers/outlook/attachments'
 import { sendMessage } from '../../../src/providers/outlook/messages'
+import { ApiError, CliMailError } from '../../../src/utils/error'
 
 describe('Outlook Attachments Provider', () => {
   const mockClient = createMockHttpClient()
@@ -197,7 +198,7 @@ describe('Outlook Attachments Provider', () => {
     expect(mockClient.delete).toHaveBeenCalledWith('/messages/draft-to-clean')
   })
 
-  test('reports the draft ID when send and cleanup both fail', async () => {
+  test('reports the draft ID when attachment upload and cleanup both fail', async () => {
     const file = join(directory, 'broken.txt')
     writeFileSync(file, 'content')
     ;(mockClient.post as Mock)
@@ -219,10 +220,53 @@ describe('Outlook Attachments Provider', () => {
       provider: 'outlook',
       details: {
         draftId: 'orphan-draft-id',
-        sendError: { message: 'attachment rejected' },
+        attachmentError: { message: 'attachment rejected' },
         cleanupError: { message: 'cleanup denied' },
       },
     })
+  })
+
+  test.each([
+    new Error('socket reset'),
+    new CliMailError('request timed out', 'REQUEST_TIMEOUT'),
+    new ApiError('request timeout', 408),
+    new ApiError('gateway unavailable', 503),
+  ])('never deletes after send starts and reports an unknown outcome for %s', async (sendError) => {
+    const file = join(directory, 'ready.txt')
+    writeFileSync(file, 'ready')
+    ;(mockClient.post as Mock)
+      .mockResolvedValueOnce({ id: 'possibly-sent-draft' })
+      .mockResolvedValueOnce({ id: 'attachment-id' })
+      .mockRejectedValueOnce(sendError)
+
+    await expect(sendMessage(mockClient, {
+      to: ['recipient@example.com'], subject: 'Possibly sent', body: 'Body',
+      attachments: [{ path: file, name: 'ready.txt' }],
+    })).rejects.toMatchObject({
+      code: 'SEND_OUTCOME_UNKNOWN',
+      details: {
+        draftId: 'possibly-sent-draft',
+        outcome: 'unknown',
+        action: expect.stringContaining('Check Sent Items'),
+      },
+    })
+    expect(mockClient.delete).not.toHaveBeenCalled()
+  })
+
+  test('preserves a definite send rejection and still never deletes after send starts', async () => {
+    const file = join(directory, 'ready.txt')
+    writeFileSync(file, 'ready')
+    const rejection = new ApiError('invalid recipients', 400)
+    ;(mockClient.post as Mock)
+      .mockResolvedValueOnce({ id: 'rejected-draft' })
+      .mockResolvedValueOnce({ id: 'attachment-id' })
+      .mockRejectedValueOnce(rejection)
+
+    await expect(sendMessage(mockClient, {
+      to: ['bad@example.com'], subject: 'Rejected', body: 'Body',
+      attachments: [{ path: file, name: 'ready.txt' }],
+    })).rejects.toBe(rejection)
+    expect(mockClient.delete).not.toHaveBeenCalled()
   })
 
   test('uploads large attachments in 3,276,800-byte sequential chunks', async () => {

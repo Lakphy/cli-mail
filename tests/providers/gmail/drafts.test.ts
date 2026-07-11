@@ -137,4 +137,18 @@ describe('Gmail Drafts Provider', () => {
     await deleteDraft(mockClient, 'draft123')
     expect(mockClient.delete).toHaveBeenCalledWith('/drafts/draft123')
   })
+
+  test('encodes draft ids before adding them to REST paths', async () => {
+    const id = '../draft%2Fid?x#y'
+    ;(mockClient.get as Mock).mockResolvedValue({
+      id,
+      message: { id: 'm1', threadId: 't1' },
+    })
+
+    await getDraft(mockClient, id)
+    await deleteDraft(mockClient, id)
+    const encoded = '..%2Fdraft%252Fid%3Fx%23y'
+    expect(mockClient.get).toHaveBeenCalledWith(`/drafts/${encoded}`, { format: 'full' })
+    expect(mockClient.delete).toHaveBeenCalledWith(`/drafts/${encoded}`)
+  })
 })

@@ -140,7 +140,9 @@ export function startOAuthCallbackServer(
     })
 
     const timeout = setTimeout(() => {
-      settle(() => rejectResult(new Error('OAuth callback timed out after 5 minutes')))
+      settle(() => rejectResult(new Error(
+        `OAuth callback timed out after ${formatTimeout(timeoutMs)}`,
+      )))
     }, timeoutMs)
     timeout.unref()
 
@@ -162,4 +164,12 @@ export function startOAuthCallbackServer(
       resolveStart({ result, port, host, path: callbackPath, server })
     })
   })
+}
+
+function formatTimeout(timeoutMs: number): string {
+  if (timeoutMs >= 60_000 && timeoutMs % 60_000 === 0) {
+    const minutes = timeoutMs / 60_000
+    return `${minutes} minute${minutes === 1 ? '' : 's'}`
+  }
+  return `${timeoutMs}ms`
 }

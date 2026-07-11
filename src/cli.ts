@@ -131,7 +131,7 @@ export function createCli(): Command {
     .description('List messages')
     .option('--folder <id>', 'Folder/Label ID to list from')
     .option('--query <query>', 'Search query')
-    .option('--top <n>', 'Number of messages to return', positiveInteger, '20')
+    .option('--top <n>', 'Number of messages to return', positiveInteger)
     .option('--skip <n>', 'Number of messages to skip', nonNegativeInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
@@ -214,8 +214,8 @@ export function createCli(): Command {
   message
     .command('search')
     .description('Search messages')
-    .requiredOption('--query <query>', 'Search query')
-    .option('--top <n>', 'Number of results', positiveInteger, '20')
+    .option('--query <query>', 'Search query (required on the first page)')
+    .option('--top <n>', 'Number of results', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
     .action((opts) => messageSearch(opts))
@@ -279,7 +279,7 @@ export function createCli(): Command {
     .description('List recent messages by time range')
     .option('--hours <n>', 'Number of hours to look back (default: 24)', positiveInteger)
     .option('--since <date>', 'ISO 8601 date to start from')
-    .option('--top <n>', 'Number of messages to return', positiveInteger, '20')
+    .option('--top <n>', 'Number of messages to return', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
     .action((opts) => messageRecent(opts))
@@ -313,7 +313,7 @@ export function createCli(): Command {
   draft
     .command('list')
     .description('List drafts')
-    .option('--top <n>', 'Number of drafts', positiveInteger, '20')
+    .option('--top <n>', 'Number of drafts', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
     .action((opts) => draftList(opts))
@@ -372,7 +372,7 @@ export function createCli(): Command {
     .command('list')
     .description('List folders/labels')
     .option('--parent <id>', 'Parent folder ID (Outlook only)')
-    .option('--top <n>', 'Number of folders', positiveInteger, '100')
+    .option('--top <n>', 'Number of folders', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
     .action((opts) => folderList(opts))
@@ -409,12 +409,12 @@ export function createCli(): Command {
     })
 
   folder
-    .command('messages <id>')
-    .description('List messages in a folder/label')
-    .option('--top <n>', 'Number of messages', positiveInteger, '20')
+    .command('messages [id]')
+    .description('List messages in a folder/label (id required on the first page)')
+    .option('--top <n>', 'Number of messages', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
-    .action((id: string, opts) => folderMessages(id, opts))
+    .action((id: string | undefined, opts) => folderMessages(id, opts))
 
   folder
     .command('move <id>')
@@ -542,16 +542,30 @@ export function createCli(): Command {
     .option('--enabled', 'Enable auto-reply')
     .option('--disabled', 'Disable auto-reply')
     .option('--message <message>', 'Auto-reply message')
+    .option(
+      '--external-audience <audience>',
+      'Outlook external audience: none, contactsOnly, or all',
+      choice(['none', 'contactsOnly', 'all'], 'external audience'),
+    )
     .option('--start <date>', 'Start date (ISO format)')
     .option('--end <date>', 'End date (ISO format)')
     .addOption(accountOption())
-    .action((opts: { enabled?: boolean; disabled?: boolean; message?: string; start?: string; end?: string; account?: string }) => {
+    .action((opts: {
+      enabled?: boolean
+      disabled?: boolean
+      message?: string
+      externalAudience?: 'none' | 'contactsOnly' | 'all'
+      start?: string
+      end?: string
+      account?: string
+    }) => {
       if (Boolean(opts.enabled) === Boolean(opts.disabled)) {
         throw new ConfigError('Specify exactly one of --enabled or --disabled')
       }
       return vacationSet({
         enabled: opts.enabled === true && !opts.disabled,
         message: opts.message,
+        externalAudience: opts.externalAudience,
         start: opts.start,
         end: opts.end,
         account: opts.account,
@@ -595,7 +609,7 @@ export function createCli(): Command {
     .command('list')
     .description('List threads')
     .option('--query <query>', 'Search query')
-    .option('--top <n>', 'Number of threads', positiveInteger, '20')
+    .option('--top <n>', 'Number of threads', positiveInteger)
     .option('--page-token <token>', 'Opaque token returned in meta.nextToken')
     .addOption(accountOption())
     .action((opts) => threadList(opts))
@@ -717,7 +731,7 @@ export function createCli(): Command {
   program
     .command('history')
     .description('List mailbox change history (Gmail only)')
-    .requiredOption('--start-history-id <id>', 'History ID to start from')
+    .option('--start-history-id <id>', 'History ID to start from (required on the first page)')
     .option('--label-id <id>', 'Filter by label ID')
     .option('--types <types...>', 'History types: messageAdded, messageDeleted, labelAdded, labelRemoved', choice([
       'messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved',

@@ -2,6 +2,7 @@ import { describe, expect, test, type Mock } from 'vitest'
 import { createMockHttpClient } from '../../helpers'
 import { AuthError, RateLimitError } from '../../../src/utils/error'
 import {
+  getSendAs,
   getSendAsAliases,
   getSettings,
   setVacation,
@@ -225,5 +226,15 @@ describe('Gmail settings provider', () => {
       'alias@example.com',
     ])
     expect(client.get).toHaveBeenCalledWith('/settings/sendAs')
+  })
+
+  test('encodes send-as identities used as REST path segments', async () => {
+    const client = createMockHttpClient()
+    ;(client.get as Mock).mockResolvedValue({ sendAsEmail: 'value' })
+
+    await getSendAs(client, '../alias%2Fid?x#y')
+    expect(client.get).toHaveBeenCalledWith(
+      '/settings/sendAs/..%2Falias%252Fid%3Fx%23y',
+    )
   })
 })

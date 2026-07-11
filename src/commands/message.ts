@@ -19,7 +19,13 @@ import { loadConfig, getAccountsByTag } from '../config/store.js'
 import pLimit from 'p-limit'
 import type { AccountConfig } from '../config/types.js'
 import type { MessageSummary } from '../providers/types.js'
-import { decodePageToken, decodePageTokenState, encodePageToken, type PageTokenContext } from '../utils/page-token.js'
+import {
+  createPageTokenContext,
+  decodePageTokenState,
+  encodePageToken,
+  resolvePageTokenOption,
+  type PageTokenContext,
+} from '../utils/page-token.js'
 import { getRegularFileSize, readRegularFile } from '../utils/files.js'
 import {
   messageListColumns,
@@ -43,19 +49,32 @@ interface MessageListOpts {
 export async function messageList(opts: MessageListOpts): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const pageToken = decodePageToken(opts.pageToken, account, 'message.list')
+    if (opts.pageToken && opts.skip !== undefined) {
+      throw new ConfigError('--skip cannot be combined with --page-token')
+    }
+    if (account.provider === 'gmail' && opts.skip !== undefined) {
+      throw new ConfigError('--skip is not supported for Gmail accounts')
+    }
+    const pageState = decodePageTokenState(opts.pageToken, account, 'message.list')
+    const folder = resolvePageTokenOption(pageState, 'folder', opts.folder)
+    const query = resolvePageTokenOption(pageState, 'query', opts.query)
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
     const options = {
-      folder: opts.folder,
-      query: opts.query,
-      top: opts.top ? parseInt(opts.top, 10) : 20,
+      folder,
+      query,
+      top: parseInt(topValue, 10),
       skip: opts.skip ? parseInt(opts.skip, 10) : undefined,
-      pageToken,
+      pageToken: pageState?.cursor,
     }
 
     const result = account.provider === 'gmail'
       ? await gmailMessages.listMessages(client, options)
       : await outlookMessages.listMessages(client, options)
-    outputMessagePage(account, 'message.list', result)
+    outputMessagePage(account, 'message.list', result, false, createPageTokenContext({
+      folder,
+      query,
+      top: topValue,
+    }))
   } catch (error) {
     handleError(error)
   }
@@ -271,17 +290,23 @@ export async function messageMark(
 }
 
 export async function messageSearch(
-  opts: { query: string; top?: string; pageToken?: string; account?: string },
+  opts: { query?: string; top?: string; pageToken?: string; account?: string },
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const top = opts.top ? parseInt(opts.top, 10) : 20
-    const pageToken = decodePageToken(opts.pageToken, account, 'message.search')
+    const pageState = decodePageTokenState(opts.pageToken, account, 'message.search')
+    const query = resolvePageTokenOption(pageState, 'query', opts.query)
+    if (!query) throw new ConfigError('--query is required on the first page')
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
+    const top = parseInt(topValue, 10)
 
     const result = account.provider === 'gmail'
-      ? await gmailMessages.searchMessages(client, opts.query, top, pageToken)
-      : await outlookMessages.searchMessages(client, opts.query, top, pageToken)
-    outputMessagePage(account, 'message.search', result, true)
+      ? await gmailMessages.searchMessages(client, query, top, pageState?.cursor)
+      : await outlookMessages.searchMessages(client, query, top, pageState?.cursor)
+    outputMessagePage(account, 'message.search', result, true, createPageTokenContext({
+      query,
+      top: topValue,
+    }))
   } catch (error) {
     handleError(error)
   }
@@ -434,9 +459,14 @@ export async function messageRecent(
 ): Promise<void> {
   try {
     const { account, client } = resolveAccount(opts.account)
-    const top = opts.top ? parseInt(opts.top, 10) : 20
     const pageState = decodePageTokenState(opts.pageToken, account, 'message.recent')
     const pageToken = pageState?.cursor
+    const topValue = resolvePageTokenOption(pageState, 'top', opts.top) ?? '20'
+    const top = parseInt(topValue, 10)
+
+    if (pageState && opts.hours !== undefined) {
+      throw new ConfigError('Omit --hours when continuing with --page-token; the original time range is already stored in the token')
+    }
 
     const sinceDate = resolveSinceDate(opts, {
       contextSince: pageState?.context?.since,
@@ -449,7 +479,10 @@ export async function messageRecent(
     const result = account.provider === 'gmail'
       ? await gmailMessages.listMessagesSince(client, sinceDate, top, pageToken)
       : await outlookMessages.listMessagesSince(client, sinceDate, top, pageToken)
-    outputMessagePage(account, 'message.recent', result, false, { since: sinceDate.toISOString() })
+    outputMessagePage(account, 'message.recent', result, false, {
+      since: sinceDate.toISOString(),
+      top: topValue,
+    })
   } catch (error) {
     handleError(error)
   }
@@ -489,8 +522,8 @@ export async function messageAll(
         }
         const client = createClientForAccount(accountConfig)
         const result = accountConfig.provider === 'gmail'
-          ? await gmailMessages.listMessagesSince(client, sinceDate, top)
-          : await outlookMessages.listMessagesSince(client, sinceDate, top)
+          ? await gmailMessages.listInboxMessagesSince(client, sinceDate, top)
+          : await outlookMessages.listInboxMessagesSince(client, sinceDate, top)
         return {
           succeeded: result.messages.length > 0 || !('errors' in result) || (result.errors?.length ?? 0) === 0,
           messages: result.messages.map((message) => ({

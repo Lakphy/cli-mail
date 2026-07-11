@@ -112,6 +112,6 @@ describe('OAuth callback server', () => {
       timeoutMs: 20,
     })
     servers.push(callback.server)
-    await expect(callback.result).rejects.toThrow('timed out')
+    await expect(callback.result).rejects.toThrow('timed out after 20ms')
   })
 })

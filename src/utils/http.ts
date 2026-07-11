@@ -1,14 +1,15 @@
 // HTTP client wrapper with authentication, bounded retries, and token refresh.
 
+import { createHash } from 'node:crypto'
 import { ApiError, RateLimitError, AuthError, CliMailError } from './error.js'
-import type { OAuthTokens } from '../config/types.js'
+import type { AccountTokenIdentity, OAuthTokens } from '../config/types.js'
 import { updateAccountTokens } from '../config/store.js'
 
 export interface HttpClientOptions {
   baseUrl: string
   getTokens: () => OAuthTokens
   refreshTokens: () => Promise<OAuthTokens>
-  accountAlias: string
+  accountIdentity: AccountTokenIdentity
   defaultHeaders?: Record<string, string>
   timeoutMs?: number
   /** Exact hosts (or their subdomains) allowed for pre-authenticated upload URLs. */
@@ -34,7 +35,7 @@ export class HttpClient {
   private readonly baseOrigin: string
   private readonly getTokens: () => OAuthTokens
   private readonly refreshTokens: () => Promise<OAuthTokens>
-  private readonly accountAlias: string
+  private readonly accountIdentity: AccountTokenIdentity
   private readonly defaultHeaders: Record<string, string>
   private readonly timeoutMs: number
   private readonly allowedUnauthenticatedHosts: string[]
@@ -46,7 +47,7 @@ export class HttpClient {
     this.baseOrigin = new URL(options.baseUrl).origin
     this.getTokens = options.getTokens
     this.refreshTokens = options.refreshTokens
-    this.accountAlias = options.accountAlias
+    this.accountIdentity = { ...options.accountIdentity }
     this.defaultHeaders = { ...options.defaultHeaders }
     this.timeoutMs = options.timeoutMs ?? 30_000
     this.allowedUnauthenticatedHosts = options.allowedUnauthenticatedHosts ?? []
@@ -55,9 +56,17 @@ export class HttpClient {
 
   private async refreshAndPersist(): Promise<OAuthTokens> {
     if (!this.refreshPromise) {
+      const expectedRefreshTokenBinding = createHash('sha256')
+        .update('cli-mail-refresh-token\0')
+        .update(this.getTokens().refresh_token)
+        .digest('hex')
       this.refreshPromise = this.refreshTokens()
         .then(async (tokens) => {
-          await updateAccountTokens(this.accountAlias, tokens)
+          await updateAccountTokens(
+            this.accountIdentity,
+            tokens,
+            expectedRefreshTokenBinding,
+          )
           return tokens
         })
         .finally(() => {
@@ -73,6 +82,12 @@ export class HttpClient {
     authenticated = true,
   ): string {
     const absolute = /^https?:\/\//i.test(path)
+    if (!absolute && containsDotPathSegment(path)) {
+      throw new CliMailError(
+        'Refusing relative URL with a dot path segment',
+        'UNSAFE_URL',
+      )
+    }
     const url = new URL(absolute ? path : `${this.baseUrl}${path}`)
 
     if (authenticated && url.origin !== this.baseOrigin) {
@@ -158,14 +173,14 @@ export class HttpClient {
         redirect: 'manual',
       })
     } catch (error) {
-      if (method === 'GET' && attempt < MAX_ATTEMPTS && isRetryableNetworkError(error)) {
-        await delay(backoffMs(attempt))
-        return this.request<T>(method, path, options, authRetried, attempt + 1)
-      }
-      if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new CliMailError(`Request timed out after ${this.timeoutMs}ms`, 'REQUEST_TIMEOUT')
-      }
-      throw error
+      return this.handleTransportFailure<T>(
+        error,
+        method,
+        path,
+        options,
+        authRetried,
+        attempt,
+      )
     }
 
     if (authenticated && response.status === 401 && !authRetried) {
@@ -192,10 +207,23 @@ export class HttpClient {
     }
 
     if (response.ok) {
-      if (options.rawResponse) return response as unknown as T
+      if (options.rawResponse) return mapRawResponseErrors(response, this.timeoutMs) as unknown as T
       if (response.status === 204) return undefined as T
 
-      const text = await response.text()
+      let text: string
+      try {
+        text = await response.text()
+      } catch (error) {
+        return this.handleTransportFailure<T>(
+          error,
+          method,
+          path,
+          options,
+          authRetried,
+          attempt,
+          response,
+        )
+      }
       if (!text) return undefined as T
       try {
         return JSON.parse(text) as T
@@ -204,7 +232,20 @@ export class HttpClient {
       }
     }
 
-    const errorBody = await readErrorBody(response)
+    let errorBody: unknown
+    try {
+      errorBody = await readErrorBody(response)
+    } catch (error) {
+      return this.handleTransportFailure<T>(
+        error,
+        method,
+        path,
+        options,
+        authRetried,
+        attempt,
+        response,
+      )
+    }
     const retryableForbidden = response.status === 403
       && this.isRetryableForbidden?.(errorBody) === true
     const retryable = RETRYABLE_STATUS.has(response.status) || retryableForbidden
@@ -221,6 +262,26 @@ export class HttpClient {
     }
 
     throw new ApiError(extractErrorMessage(errorBody, response), response.status, errorBody)
+  }
+
+  private async handleTransportFailure<T>(
+    error: unknown,
+    method: string,
+    path: string,
+    options: RequestOptions,
+    authRetried: boolean,
+    attempt: number,
+    response?: Response,
+  ): Promise<T> {
+    await response?.body?.cancel().catch(() => undefined)
+    if (method === 'GET'
+      && options.rawResponse !== true
+      && attempt < MAX_ATTEMPTS
+      && isRetryableNetworkError(error)) {
+      await delay(backoffMs(attempt))
+      return this.request<T>(method, path, options, authRetried, attempt + 1)
+    }
+    throw mapTransportError(error, this.timeoutMs)
   }
 
   async get<T>(path: string, query?: RequestOptions['query'], headers?: Record<string, string>): Promise<T> {
@@ -332,7 +393,72 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function containsDotPathSegment(path: string): boolean {
+  let candidate = path.split(/[?#]/, 1)[0]
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (candidate.split(/[\\/]/).some((segment) => segment === '.' || segment === '..')) {
+      return true
+    }
+    try {
+      const decoded = decodeURIComponent(candidate)
+      if (decoded === candidate) return false
+      candidate = decoded
+    } catch {
+      return false
+    }
+  }
+  return candidate.split(/[\\/]/).some((segment) => segment === '.' || segment === '..')
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === 'TimeoutError'
+      || error.name === 'AbortError'
+      || (error as NodeJS.ErrnoException).code === 'ABORT_ERR')
+}
+
+function mapTransportError(error: unknown, timeoutMs: number): unknown {
+  if (isTimeoutError(error)) {
+    return new CliMailError(`Request timed out after ${timeoutMs}ms`, 'REQUEST_TIMEOUT')
+  }
+  return error
+}
+
+/**
+ * `fetch()` resolves as soon as headers arrive, while its timeout signal also
+ * governs later body reads.  Wrap raw bodies so callers receive the same
+ * stable timeout error as buffered requests.  Raw streams are deliberately
+ * never replayed because consumers may already have observed bytes.
+ */
+function mapRawResponseErrors(response: Response, timeoutMs: number): Response {
+  if (!response.body) return response
+
+  const reader = response.body.getReader()
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read()
+        if (chunk.done) controller.close()
+        else controller.enqueue(chunk.value)
+      } catch (error) {
+        await reader.cancel(error).catch(() => undefined)
+        controller.error(mapTransportError(error, timeoutMs))
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined)
+    },
+  })
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
 function isRetryableNetworkError(error: unknown): boolean {
-  return error instanceof TypeError
+  return isTimeoutError(error)
+    || error instanceof TypeError
     || (error instanceof Error && ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes((error as NodeJS.ErrnoException).code ?? ''))
 }

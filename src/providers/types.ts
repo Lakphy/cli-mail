@@ -88,6 +88,7 @@ export interface MailboxSettings {
     status: string
     internalReplyMessage?: string
     externalReplyMessage?: string
+    externalAudience?: 'none' | 'contactsOnly' | 'all'
     startDateTime?: string
     endDateTime?: string
   }

@@ -3,12 +3,15 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import {
   createAccount,
   finalizeMigration,
@@ -17,6 +20,7 @@ import {
   getMigrationStatus,
   loadConfig,
   reauthorizeAccount,
+  renameAccount,
   removeAccount,
   saveConfig,
   setConfigPath,
@@ -51,6 +55,13 @@ function legacyConfig() {
   }
 }
 
+function refreshTokenBinding(refreshToken: string): string {
+  return createHash('sha256')
+    .update('cli-mail-refresh-token\0')
+    .update(refreshToken)
+    .digest('hex')
+}
+
 beforeEach(() => {
   previousPath = getConfigPath()
   rmSync(testDirectory, { recursive: true, force: true })
@@ -59,6 +70,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   setConfigPath(previousPath)
   rmSync(testDirectory, { recursive: true, force: true })
 })
@@ -138,6 +150,18 @@ describe('config v2 migration', () => {
     expect(existsSync(testFile)).toBe(true)
     expect(existsSync(`${testFile}.v1.bak`)).toBe(true)
   })
+
+  test('does not move a legacy primary when an existing recovery copy is invalid', () => {
+    const legacy = JSON.stringify(legacyConfig())
+    const invalidRecovery = '{ invalid recovery'
+    writeFileSync(testFile, legacy)
+    writeFileSync(`${testFile}.last-good`, invalidRecovery)
+
+    expect(() => loadConfig()).toThrow(`${testFile}.last-good`)
+    expect(readFileSync(testFile, 'utf8')).toBe(legacy)
+    expect(readFileSync(`${testFile}.last-good`, 'utf8')).toBe(invalidRecovery)
+    expect(existsSync(`${testFile}.v1.bak`)).toBe(false)
+  })
 })
 
 describe('validated atomic storage', () => {
@@ -185,12 +209,18 @@ describe('validated atomic storage', () => {
         token_type: 'Bearer',
       },
     })
-    updateAccountTokens('work', {
+    const account = loadConfig().accounts[0]
+    updateAccountTokens({
+      id: account.id,
+      alias: account.alias,
+      provider: account.provider,
+      clientId: account.client_id,
+    }, {
       access_token: 'new',
       refresh_token: 'refresh',
       expires_at: Date.now() + 3600_000,
       token_type: 'Bearer',
-    })
+    }, refreshTokenBinding(account.tokens.refresh_token))
     expect(loadConfig().accounts[0]).toMatchObject({
       status: 'active',
       tag: 'team',
@@ -201,12 +231,238 @@ describe('validated atomic storage', () => {
     expect(readFileSync(testFile, 'utf8')).not.toContain('must-not-be-stored')
   })
 
+  test('binds token updates to stable id and OAuth client while allowing alias renames', () => {
+    const original = createAccount({
+      alias: 'stable-refresh',
+      provider: 'gmail',
+      email: 'stable@example.com',
+      client_id: 'client-one',
+      tokens: {
+        access_token: 'old-access',
+        refresh_token: 'old-refresh',
+        expires_at: 1,
+        token_type: 'Bearer',
+      },
+    })
+    const identity = {
+      id: original.id,
+      alias: original.alias,
+      provider: original.provider,
+      clientId: original.client_id,
+    }
+
+    renameAccount(original.alias, 'renamed-refresh')
+    updateAccountTokens(identity, {
+      access_token: 'renamed-access',
+      refresh_token: 'renamed-refresh-token',
+      expires_at: Date.now() + 3600_000,
+      token_type: 'Bearer',
+    }, refreshTokenBinding('old-refresh'))
+    expect(loadConfig().accounts[0].tokens.access_token).toBe('renamed-access')
+
+    reauthorizeAccount(original.id, {
+      email: original.email,
+      client_id: original.client_id,
+      tokens: {
+        access_token: 'same-client-replacement-access',
+        refresh_token: 'same-client-replacement-refresh',
+        expires_at: Date.now() + 3600_000,
+        token_type: 'Bearer',
+      },
+    })
+    expect(() => updateAccountTokens(identity, {
+      access_token: 'same-client-stale-access',
+      refresh_token: 'same-client-stale-refresh',
+      expires_at: Date.now() + 3600_000,
+      token_type: 'Bearer',
+    }, refreshTokenBinding('renamed-refresh-token'))).toThrow('credentials changed')
+    expect(loadConfig().accounts[0].tokens.access_token).toBe('same-client-replacement-access')
+
+    reauthorizeAccount(original.id, {
+      email: original.email,
+      client_id: 'client-two',
+      tokens: {
+        access_token: 'replacement-access',
+        refresh_token: 'replacement-refresh',
+        expires_at: Date.now() + 3600_000,
+        token_type: 'Bearer',
+      },
+    })
+    expect(() => updateAccountTokens(identity, {
+      access_token: 'stale-access',
+      refresh_token: 'stale-refresh',
+      expires_at: Date.now() + 3600_000,
+      token_type: 'Bearer',
+    }, refreshTokenBinding('renamed-refresh-token'))).toThrow('authorization changed')
+    expect(loadConfig().accounts[0].tokens.access_token).toBe('replacement-access')
+
+    removeAccount('renamed-refresh')
+    const replacement = createAccount({
+      alias: original.alias,
+      provider: 'gmail',
+      email: 'other@example.com',
+      client_id: 'client-one',
+      tokens: {
+        access_token: 'other-access',
+        refresh_token: 'other-refresh',
+        expires_at: Date.now() + 3600_000,
+        token_type: 'Bearer',
+      },
+    })
+    expect(() => updateAccountTokens(identity, {
+      access_token: 'cross-account-access',
+      refresh_token: 'cross-account-refresh',
+      expires_at: Date.now() + 3600_000,
+      token_type: 'Bearer',
+    }, refreshTokenBinding('old-refresh'))).toThrow('no longer exists')
+    expect(loadConfig().accounts.find((account) => account.id === replacement.id)?.tokens.access_token)
+      .toBe('other-access')
+  })
+
+  test('restores a missing primary from a validated last-good copy with one safe warning', () => {
+    const created = createAccount({
+      alias: 'recover-missing',
+      provider: 'gmail',
+      email: 'recover@example.com',
+      client_id: 'client',
+      tokens: {
+        access_token: 'secret-access',
+        refresh_token: 'secret-refresh',
+        expires_at: Date.now() + 3600_000,
+        token_type: 'Bearer',
+      },
+    })
+    rmSync(testFile)
+    const warning = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    expect(loadConfig().accounts[0].id).toBe(created.id)
+    expect(existsSync(testFile)).toBe(true)
+    expect(warning).toHaveBeenCalledTimes(1)
+    expect(String(warning.mock.calls[0][0])).not.toContain('secret')
+  })
+
+  test('preserves a corrupt primary before restoring last-good', () => {
+    createAccount({
+      alias: 'recover-corrupt',
+      provider: 'gmail',
+      email: 'recover@example.com',
+      client_id: 'client',
+      tokens: {
+        access_token: 'access',
+        refresh_token: 'refresh',
+        expires_at: Date.now() + 3600_000,
+        token_type: 'Bearer',
+      },
+    })
+    const corruptContents = '{ definitely not json'
+    writeFileSync(testFile, corruptContents)
+    const warning = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    expect(loadConfig().accounts[0].alias).toBe('recover-corrupt')
+    const corruptFiles = readdirSync(testDirectory).filter((name) => (
+      name.startsWith('accounts.json.corrupt-')
+    ))
+    expect(corruptFiles).toHaveLength(1)
+    const corruptPath = join(testDirectory, corruptFiles[0])
+    expect(readFileSync(corruptPath, 'utf8')).toBe(corruptContents)
+    if (process.platform !== 'win32') {
+      expect(statSync(corruptPath).mode & 0o777).toBe(0o600)
+    }
+    expect(warning).toHaveBeenCalledTimes(1)
+  })
+
+  test('does not create or overwrite files when last-good is invalid', () => {
+    loadConfig()
+    const invalidRecovery = '{ invalid recovery'
+    writeFileSync(`${testFile}.last-good`, invalidRecovery)
+    rmSync(testFile)
+
+    expect(() => loadConfig()).toThrow(`${testFile}.last-good`)
+    expect(existsSync(testFile)).toBe(false)
+    expect(readFileSync(`${testFile}.last-good`, 'utf8')).toBe(invalidRecovery)
+  })
+
+  test('does not silently replace an invalid last-good beside a valid primary', () => {
+    const config = loadConfig()
+    const primary = readFileSync(testFile, 'utf8')
+    const invalidRecovery = '{ invalid recovery beside valid primary'
+    writeFileSync(`${testFile}.last-good`, invalidRecovery)
+
+    expect(() => saveConfig(config)).toThrow(`${testFile}.last-good`)
+    expect(readFileSync(testFile, 'utf8')).toBe(primary)
+    expect(readFileSync(`${testFile}.last-good`, 'utf8')).toBe(invalidRecovery)
+  })
+
+  test('leaves a corrupt primary in place when the recovery copy is also invalid', () => {
+    loadConfig()
+    const corruptPrimary = '{ corrupt primary'
+    const corruptRecovery = '{ corrupt recovery'
+    writeFileSync(testFile, corruptPrimary)
+    writeFileSync(`${testFile}.last-good`, corruptRecovery)
+
+    expect(() => loadConfig()).toThrow(`${testFile}.last-good`)
+    expect(readFileSync(testFile, 'utf8')).toBe(corruptPrimary)
+    expect(readFileSync(`${testFile}.last-good`, 'utf8')).toBe(corruptRecovery)
+    expect(readdirSync(testDirectory).some((name) => name.includes('.corrupt-'))).toBe(false)
+  })
+
   test('recovers a directory lock left by a dead process', () => {
     const lock = `${testFile}.lock`
     mkdirSync(lock, { mode: 0o700 })
     writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: 2_147_483_647 }))
     expect(loadConfig().version).toBe(2)
-    expect(existsSync(lock)).toBe(false)
+    expect(existsSync(lock)).toBe(true)
+    expect(existsSync(join(lock, 'owner.json'))).toBe(false)
+    expect(readdirSync(join(lock, 'claims'))).toEqual([])
+  })
+
+  test('never removes a live queued claim while reclaiming a dead predecessor', async () => {
+    const lock = `${testFile}.lock`
+    const claims = join(lock, 'claims')
+    const deadNonce = '11111111-1111-4111-8111-111111111111'
+    const liveNonce = '22222222-2222-4222-8222-222222222222'
+    const liveClaim = join(claims, `${liveNonce}.json`)
+    const readyPath = join(testDirectory, 'lock-child-ready')
+    const observedPath = join(testDirectory, 'lock-child-observed')
+    mkdirSync(claims, { recursive: true, mode: 0o700 })
+    writeFileSync(join(lock, 'queue'), `Q:${deadNonce}\nQ:${liveNonce}\n`, { mode: 0o600 })
+    writeFileSync(join(claims, `${deadNonce}.json`), JSON.stringify({
+      pid: 2_147_483_647,
+      nonce: deadNonce,
+    }), { mode: 0o600 })
+
+    const child = spawn(process.execPath, ['-e', `
+      const fs = require('node:fs')
+      const [claim, ready, observed] = process.argv.slice(1)
+      fs.writeFileSync(ready, 'ready')
+      setTimeout(() => fs.writeFileSync(observed, String(fs.existsSync(claim))), 100)
+      setTimeout(() => fs.rmSync(claim, { force: true }), 250)
+      setTimeout(() => process.exit(0), 300)
+    `, liveClaim, readyPath, observedPath], { stdio: 'ignore' })
+    if (!child.pid) throw new Error('Unable to start lock test process')
+    writeFileSync(liveClaim, JSON.stringify({
+      pid: child.pid,
+      nonce: liveNonce,
+    }), { mode: 0o600 })
+
+    const exited = new Promise<void>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code) => {
+        if (code === 0) resolve()
+        else reject(new Error(`Lock test process exited with ${String(code)}`))
+      })
+    })
+    const readyDeadline = Date.now() + 2_000
+    while (!existsSync(readyPath) && Date.now() < readyDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    expect(existsSync(readyPath)).toBe(true)
+
+    expect(loadConfig().version).toBe(2)
+    await exited
+    expect(readFileSync(observedPath, 'utf8')).toBe('true')
+    expect(existsSync(join(claims, `${deadNonce}.json`))).toBe(false)
+    expect(readdirSync(claims)).toEqual([])
   })
 
   test('does not chmod an existing custom config parent directory', () => {

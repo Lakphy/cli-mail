@@ -1,6 +1,6 @@
 import { describe, expect, test, type Mock } from 'vitest'
 import { createMockHttpClient } from '../../helpers'
-import { listThreads } from '../../../src/providers/gmail/threads'
+import { getThread, listThreads, trashThread } from '../../../src/providers/gmail/threads'
 
 describe('Gmail threads provider', () => {
   test('uses repeated metadata headers and passes pageToken through', async () => {
@@ -29,5 +29,17 @@ describe('Gmail threads provider', () => {
       metadataHeaders: ['Subject', 'Date'],
     })
     expect(result.nextPageToken).toBe('next')
+  })
+
+  test('encodes thread ids in both read and mutation paths', async () => {
+    const client = createMockHttpClient()
+    const id = '../thread%2Fid?x#y'
+    ;(client.get as Mock).mockResolvedValue({ id, messages: [] })
+
+    await getThread(client, id)
+    await trashThread(client, id)
+    const encoded = '..%2Fthread%252Fid%3Fx%23y'
+    expect(client.get).toHaveBeenCalledWith(`/threads/${encoded}`, { format: 'full' })
+    expect(client.post).toHaveBeenCalledWith(`/threads/${encoded}/trash`)
   })
 })

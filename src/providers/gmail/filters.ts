@@ -2,6 +2,7 @@
 
 import type { HttpClient } from '../../utils/http.js'
 import type { RuleInfo } from '../types.js'
+import { encodeGmailPathSegment } from './helpers.js'
 
 interface GmailFilter {
   id: string
@@ -33,7 +34,9 @@ export async function listFilters(client: HttpClient): Promise<RuleInfo[]> {
 }
 
 export async function getFilter(client: HttpClient, id: string): Promise<RuleInfo> {
-  const filter = await client.get<GmailFilter>(`/settings/filters/${id}`)
+  const filter = await client.get<GmailFilter>(
+    `/settings/filters/${encodeGmailPathSegment(id)}`,
+  )
   return normalizeFilter(filter)
 }
 
@@ -49,7 +52,7 @@ export async function deleteFilter(
   client: HttpClient,
   id: string,
 ): Promise<void> {
-  await client.delete(`/settings/filters/${id}`)
+  await client.delete(`/settings/filters/${encodeGmailPathSegment(id)}`)
 }
 
 function normalizeFilter(filter: GmailFilter): RuleInfo {

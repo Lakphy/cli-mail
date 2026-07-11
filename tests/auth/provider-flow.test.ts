@@ -11,6 +11,35 @@ afterEach(() => {
 })
 
 describe('provider OAuth flow', () => {
+  test.each(['gmail', 'outlook'] as const)(
+    '%s closes its callback listener when URL notification fails',
+    async (provider) => {
+      let redirectUri = ''
+      const onAuthorizationUrl = (authorizationUrl: string) => {
+        redirectUri = new URL(authorizationUrl).searchParams.get('redirect_uri') || ''
+        throw new Error('notification failed')
+      }
+      const run = provider === 'gmail'
+        ? gmailAuthFlow({
+            clientId: 'desktop-id',
+            timeoutMs: 60_000,
+            onAuthorizationUrl,
+            launchBrowser: async () => undefined,
+          })
+        : outlookAuthFlow({
+            clientId: 'public-desktop-id',
+            timeoutMs: 60_000,
+            onAuthorizationUrl,
+            launchBrowser: async () => undefined,
+          })
+
+      await expect(run).rejects.toThrow('notification failed')
+      expect(redirectUri).toMatch(/^http:\/\/(127\.0\.0\.1|localhost):\d+/)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      await expect(realFetch(redirectUri, { signal: AbortSignal.timeout(500) })).rejects.toThrow()
+    },
+  )
+
   test('Gmail binds state to the callback and exchanges an S256 verifier', async () => {
     let authorizationUrl = ''
     let tokenBody = ''

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  encodeGmailPathSegment,
   headersToRecord,
   normalizeInternalDate,
   normalizeMessageSummary,
@@ -8,6 +9,16 @@ import {
 } from '../../../src/providers/gmail/helpers'
 
 describe('Gmail shared helpers', () => {
+  test('encodes path separators, delimiters, percent escapes, and dot segments', () => {
+    expect(encodeGmailPathSegment('../id%2Fchild?x#y'))
+      .toBe('..%2Fid%252Fchild%3Fx%23y')
+    expect(encodeGmailPathSegment('.')).toBe('%252E')
+    expect(encodeGmailPathSegment('..')).toBe('%252E%252E')
+    expect(new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeGmailPathSegment('..')}`,
+    ).pathname).toBe('/gmail/v1/users/me/messages/%252E%252E')
+  })
+
   test('normalizes valid internal dates and returns undefined for every failure', () => {
     expect(normalizeInternalDate('0')).toBe('1970-01-01T00:00:00.000Z')
     expect(normalizeInternalDate()).toBeUndefined()

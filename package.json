@@ -1,7 +1,7 @@
 {
   "name": "@lakphy/cli-mail",
   "type": "module",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "AI-oriented CLI email management tool for Gmail and Outlook",
   "author": "",
   "license": "MIT",

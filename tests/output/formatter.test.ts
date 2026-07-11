@@ -43,6 +43,22 @@ describe('Output Formatter', () => {
       expect(captured).toContain('**email**: alice@example.com')
     })
 
+    test('output renders nextToken metadata in markdown', () => {
+      output({ history: [] }, {
+        format: 'markdown',
+        meta: { nextToken: 'opaque-next' },
+      })
+      expect(captured).toContain('**nextToken**: opaque-next')
+    })
+
+    test('outputPartial renders nextToken metadata in markdown', () => {
+      outputPartial([{ id: 'ok' }], [{ code: 'FAILED', message: 'bad' }], {
+        format: 'markdown',
+        meta: { nextToken: 'partial-next' },
+      })
+      expect(captured).toContain('**nextToken**: partial-next')
+    })
+
     test('outputList renders markdown table', () => {
       outputList(
         [{ id: '1', name: 'Inbox' }, { id: '2', name: 'Sent' }],

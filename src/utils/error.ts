@@ -104,6 +104,9 @@ export function getSuggestion(error: unknown): string | undefined {
   if (error instanceof CliMailError && error.code === 'ACCOUNT_REAUTH_REQUIRED') {
     return 'Re-authenticate with: cli-mail account reauth [alias]'
   }
+  if (error instanceof CliMailError && error.code === 'SEND_OUTCOME_UNKNOWN') {
+    return 'Check Sent Items for the draft ID before retrying, to avoid sending a duplicate.'
+  }
   if (error instanceof ConfigError) {
     if (error.message.includes('not found')) return 'Run "cli-mail account list" to see available accounts.'
     if (error.message.includes('No default account')) return 'Add an account first: cli-mail account add gmail|outlook'

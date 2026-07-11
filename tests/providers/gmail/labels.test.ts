@@ -68,8 +68,10 @@ describe('Gmail Labels Provider', () => {
   })
 
   test('createLabel builds Gmail nesting from a separate parent', async () => {
+    ;(mockClient.get as Mock).mockResolvedValue({ id: 'parent/id', name: 'Projects' })
     ;(mockClient.post as Mock).mockResolvedValue({ id: 'L4', name: 'Projects/Launch' })
-    const result = await createLabel(mockClient, 'Launch', 'Projects')
+    const result = await createLabel(mockClient, 'Launch', 'parent/id')
+    expect(mockClient.get).toHaveBeenCalledWith('/labels/parent%2Fid')
     expect(mockClient.post).toHaveBeenCalledWith('/labels', {
       name: 'Projects/Launch',
       labelListVisibility: 'labelShow',
@@ -89,5 +91,18 @@ describe('Gmail Labels Provider', () => {
   test('deleteLabel calls DELETE /labels/{id}', async () => {
     await deleteLabel(mockClient, 'label-id')
     expect(mockClient.delete).toHaveBeenCalledWith('/labels/label-id')
+  })
+
+  test('encodes label ids obtained from callers and list responses', async () => {
+    const id = '../label%2Fid?x#y'
+    ;(mockClient.get as Mock)
+      .mockResolvedValueOnce({ labels: [{ id, name: 'Unsafe' }] })
+      .mockResolvedValueOnce({ id, name: 'Unsafe', messagesTotal: 1 })
+
+    await listLabels(mockClient, { includeCounts: true })
+    expect(mockClient.get).toHaveBeenNthCalledWith(
+      2,
+      '/labels/..%2Flabel%252Fid%3Fx%23y',
+    )
   })
 })

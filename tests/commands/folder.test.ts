@@ -5,6 +5,7 @@ import * as formatterModule from '../../src/output/formatter'
 import * as gmailLabels from '../../src/providers/gmail/labels'
 import * as outlookFolders from '../../src/providers/outlook/folders'
 import * as gmailMessages from '../../src/providers/gmail/messages'
+import { encodePageToken } from '../../src/utils/page-token'
 
 vi.mock('../../src/commands/resolve', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/resolve')>(),
@@ -29,9 +30,10 @@ vi.mock('../../src/providers/outlook/folders', () => ({
   listFolderMessages: vi.fn(),
 }))
 vi.mock('../../src/providers/gmail/messages', () => ({ listMessages: vi.fn() }))
-vi.mock('../../src/utils/error', () => ({
-  handleError: vi.fn()
-}))
+vi.mock('../../src/utils/error', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/utils/error')>()
+  return { ...actual, handleError: vi.fn() }
+})
 
 describe('Folder Command Handlers', () => {
   const dummyClient = {} as any
@@ -56,6 +58,30 @@ describe('Folder Command Handlers', () => {
     })
 
     expect(formatterModule.outputList).toHaveBeenCalledTimes(2)
+  })
+
+  test('folderList restores parent and top from a v2 page token', async () => {
+    const account = { id: 'outlook-1', provider: 'outlook' as const }
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: account as any, client: dummyClient })
+    vi.mocked(outlookFolders.listFoldersPage).mockResolvedValue({ folders: [] })
+    const pageToken = encodePageToken(account, 'folder.list', 'next-link', {
+      parent: 'parent-1',
+      top: '17',
+    })
+
+    await folderList({ pageToken })
+
+    expect(outlookFolders.listFoldersPage).toHaveBeenCalledWith(dummyClient, {
+      parentId: 'parent-1',
+      top: 17,
+      pageToken: 'next-link',
+    })
+    const { handleError } = await import('../../src/utils/error')
+    vi.mocked(handleError).mockClear()
+    await folderList({ pageToken, parent: 'other' })
+    expect(handleError).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringMatching(/does not match/),
+    }))
   })
 
   test('folderCreate leaves Gmail parent/name nesting to the provider', async () => {
@@ -110,6 +136,23 @@ describe('Folder Command Handlers', () => {
       [{ code: 'MESSAGE_FETCH_FAILED', message: 'failed', item: { id: 'bad' } }],
       { meta: { nextToken: undefined } },
     )
+  })
+
+  test('folderMessages restores the folder id and top from a v2 page token', async () => {
+    const account = { id: 'outlook-1', provider: 'outlook' as const }
+    vi.mocked(resolveModule.resolveAccount).mockReturnValue({ account: account as any, client: dummyClient })
+    vi.mocked(outlookFolders.listFolderMessages).mockResolvedValue({ messages: [] })
+    const pageToken = encodePageToken(account, 'folder.messages', 'next-link', {
+      label: 'folder-1',
+      top: '8',
+    })
+
+    await folderMessages(undefined, { pageToken })
+
+    expect(outlookFolders.listFolderMessages).toHaveBeenCalledWith(dummyClient, 'folder-1', {
+      top: 8,
+      pageToken: 'next-link',
+    })
   })
 
   test('folderMove throws Error for Gmail', async () => {

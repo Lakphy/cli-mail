@@ -12,7 +12,7 @@ interface GraphMailboxSettings {
     externalReplyMessage?: string
     scheduledStartDateTime?: { dateTime: string; timeZone: string }
     scheduledEndDateTime?: { dateTime: string; timeZone: string }
-    externalAudience?: string
+    externalAudience?: OutlookExternalAudience
   }
   language?: { locale: string; displayName: string }
   timeZone?: string
@@ -45,9 +45,12 @@ const outlookAutoReplySchema = z.object({
   enabled: z.boolean(),
   internalMessage: z.string().optional(),
   externalMessage: z.string().optional(),
+  externalAudience: z.enum(['none', 'contactsOnly', 'all']).optional(),
   startDateTime: z.string().optional(),
   endDateTime: z.string().optional(),
 }).strict()
+
+export type OutlookExternalAudience = 'none' | 'contactsOnly' | 'all'
 
 export async function getSettings(client: HttpClient): Promise<MailboxSettings> {
   const settings = await client.get<GraphMailboxSettings>('/mailboxSettings')
@@ -77,6 +80,7 @@ export async function getAutoReply(client: HttpClient): Promise<MailboxSettings[
     status: ars.status,
     internalReplyMessage: ars.internalReplyMessage,
     externalReplyMessage: ars.externalReplyMessage,
+    externalAudience: ars.externalAudience,
     startDateTime: ars.scheduledStartDateTime?.dateTime,
     endDateTime: ars.scheduledEndDateTime?.dateTime,
   }
@@ -118,8 +122,15 @@ export async function setAutoReply(
   const settings: Record<string, unknown> = {
     automaticRepliesSetting: {
       status,
-      internalReplyMessage: options.internalMessage ?? '',
-      externalReplyMessage: options.externalMessage ?? '',
+      ...(options.internalMessage !== undefined
+        ? { internalReplyMessage: options.internalMessage }
+        : {}),
+      ...(options.externalMessage !== undefined
+        ? { externalReplyMessage: options.externalMessage }
+        : {}),
+      ...(options.externalAudience !== undefined
+        ? { externalAudience: options.externalAudience }
+        : {}),
       ...(status === 'scheduled' && start && end
         ? {
             scheduledStartDateTime: {
@@ -222,6 +233,7 @@ function normalizeSettings(settings: GraphMailboxSettings): MailboxSettings {
           status: ars.status,
           internalReplyMessage: ars.internalReplyMessage,
           externalReplyMessage: ars.externalReplyMessage,
+          externalAudience: ars.externalAudience,
           startDateTime: ars.scheduledStartDateTime?.dateTime,
           endDateTime: ars.scheduledEndDateTime?.dateTime,
         }

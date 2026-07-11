@@ -128,5 +128,14 @@ describe('Error Utilities', () => {
       const output = JSON.parse(formatErrorOutput(err))
       expect(output.error.suggestion).toContain('account reauth')
     })
+
+    test('suggests checking Sent Items for an unknown send outcome', () => {
+      const err = new CliMailError('Send outcome unknown', 'SEND_OUTCOME_UNKNOWN', undefined, {
+        draftId: 'draft-1',
+      })
+      const output = JSON.parse(formatErrorOutput(err))
+      expect(output.error.details).toEqual({ draftId: 'draft-1' })
+      expect(output.error.suggestion).toMatch(/Sent Items.*before retrying/i)
+    })
   })
 })

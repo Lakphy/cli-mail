@@ -19,7 +19,7 @@ import {
   type GraphMessageList,
 } from './graph.js'
 import { pageMetadata, validateGraphNextLink, type OutlookPageMetadata } from './pagination.js'
-import { ApiError, ProviderError } from '../../utils/error.js'
+import { ApiError, CliMailError, ProviderError } from '../../utils/error.js'
 
 export interface OutlookMessagePage extends OutlookPageMetadata {
   messages: MessageSummary[]
@@ -120,6 +120,25 @@ export function listMessagesSince(
   })
 }
 
+/**
+ * List messages received in Inbox since the requested time. Keep this
+ * separate from listMessagesSince(): "recent" is mailbox-wide, while inbox
+ * aggregation must not include Sent Items, Archive, or other folders.
+ */
+export function listInboxMessagesSince(
+  client: HttpClient,
+  sinceDate: Date,
+  top: number,
+  pageToken?: string,
+): Promise<OutlookMessagePage> {
+  return listMessages(client, {
+    folder: 'Inbox',
+    top,
+    filter: `receivedDateTime ge ${sinceDate.toISOString()}`,
+    pageToken,
+  })
+}
+
 export async function getMessage(
   client: HttpClient,
   id: string,
@@ -159,6 +178,9 @@ export async function sendMessage(
   // Graph requires upload sessions for files >= 3 MiB. Creating a draft first
   // gives both small and large attachments one protocol-correct code path.
   const draft = await client.post<GraphMessage>('/messages', message)
+
+  // Failures before the send action starts are known not to have sent the
+  // message, so the temporary draft can still be cleaned up safely.
   try {
     for (const attachment of options.attachments) {
       await addAttachment(
@@ -168,28 +190,67 @@ export async function sendMessage(
         attachment.name || basename(attachment.path),
       )
     }
-    await client.post(`/messages/${encodeURIComponent(draft.id)}/send`)
-  } catch (sendError) {
+  } catch (attachmentError) {
     try {
       await client.delete(`/messages/${encodeURIComponent(draft.id)}`)
     } catch (cleanupError) {
-      // A missing draft means there is no leftover object to clean up. This
-      // can happen when Graph accepted send but the client lost the response.
       if (cleanupError instanceof ApiError && cleanupError.statusCode === 404) {
-        throw sendError
+        throw attachmentError
       }
       throw new ProviderError(
-        'Outlook send failed and the temporary draft could not be removed',
+        'Outlook attachment upload failed and the temporary draft could not be removed',
         'outlook',
         {
           draftId: draft.id,
-          sendError: safeErrorDetails(sendError),
+          attachmentError: safeErrorDetails(attachmentError),
           cleanupError: safeErrorDetails(cleanupError),
+        },
+      )
+    }
+    throw attachmentError
+  }
+
+  // Never delete the draft after the send request begins. Graph may have
+  // accepted and moved it to Sent Items even when the response is lost.
+  try {
+    await client.post(`/messages/${encodeURIComponent(draft.id)}/send`)
+  } catch (sendError) {
+    if (isAmbiguousSendError(sendError)) {
+      throw new CliMailError(
+        'Outlook may have sent the message, but the final outcome could not be confirmed',
+        'SEND_OUTCOME_UNKNOWN',
+        undefined,
+        {
+          draftId: draft.id,
+          outcome: 'unknown',
+          action: 'Check Sent Items for this draft before retrying to avoid sending a duplicate.',
+          sendError: safeErrorDetails(sendError),
         },
       )
     }
     throw sendError
   }
+}
+
+function isAmbiguousSendError(error: unknown): boolean {
+  if (error instanceof CliMailError) {
+    if (error.code === 'REQUEST_TIMEOUT') return true
+    if (error.statusCode !== undefined) {
+      return error.statusCode === 408 || error.statusCode >= 500
+    }
+    // Provider/client failures without an HTTP response cannot establish
+    // whether Graph accepted the send action.
+    return error.code === 'UNKNOWN_ERROR'
+  }
+
+  const statusCode = (error as { statusCode?: unknown } | null)?.statusCode
+  if (typeof statusCode === 'number') {
+    return statusCode === 408 || statusCode >= 500
+  }
+
+  // fetch() network failures surface as TypeError, while test doubles and
+  // alternate runtimes may use a plain Error. Neither carries a response.
+  return error instanceof Error
 }
 
 function safeErrorDetails(error: unknown): Record<string, unknown> {

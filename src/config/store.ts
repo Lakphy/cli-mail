@@ -9,16 +9,24 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
-  statSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { z } from 'zod'
-import type { AccountConfig, AccountStatus, AppConfig, OAuthTokens, Provider } from './types.js'
+import type {
+  AccountConfig,
+  AccountStatus,
+  AccountTokenIdentity,
+  AppConfig,
+  OAuthTokens,
+  Provider,
+} from './types.js'
 import { CONFIG_VERSION, createDefaultConfig } from './types.js'
 import { AccountReauthRequiredError, ConfigError, errorMessage } from '../utils/error.js'
 
@@ -26,6 +34,7 @@ const DEFAULT_CONFIG_DIR = join(homedir(), '.cli-mail')
 const DEFAULT_CONFIG_FILE = join(DEFAULT_CONFIG_DIR, 'accounts.json')
 const LOCK_WAIT_MS = 5_000
 const LOCK_STALE_MS = 60_000
+const LOCK_QUEUE_RECORD = /Q:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\n/gi
 
 let CONFIG_DIR = DEFAULT_CONFIG_DIR
 let CONFIG_FILE = DEFAULT_CONFIG_FILE
@@ -247,20 +256,190 @@ function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 }
 
-function lockOwnerIsGone(path: string): boolean {
+function processIsGone(pid: number): boolean {
   try {
-    const owner = JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8')) as { pid?: unknown }
-    if (!Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0) return false
-    try {
-      process.kill(owner.pid as number, 0)
-      return false
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      return code === 'ESRCH' || code === 'EINVAL'
-    }
-  } catch {
+    process.kill(pid, 0)
     return false
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === 'ESRCH' || code === 'EINVAL'
   }
+}
+
+function ensureRegularLockFile(path: string): void {
+  const stats = lstatSync(path)
+  if (!stats.isFile()) throw new ConfigError(`Config lock entry must be a regular file: ${path}`)
+  try {
+    chmodSync(path, 0o600)
+  } catch (error) {
+    if (process.platform !== 'win32') {
+      throw new ConfigError(`Unable to secure config lock entry ${path}: ${String(error)}`)
+    }
+  }
+}
+
+function ensureLockDirectory(path: string): void {
+  const stats = lstatSync(path)
+  if (!stats.isDirectory()) throw new ConfigError(`Config lock path must be a directory: ${path}`)
+  try {
+    chmodSync(path, 0o700)
+  } catch (error) {
+    if (process.platform !== 'win32') {
+      throw new ConfigError(`Unable to secure config lock directory ${path}: ${String(error)}`)
+    }
+  }
+}
+
+function initializeQueueLock(path: string): void {
+  const claimsPath = join(path, 'claims')
+  try {
+    mkdirSync(claimsPath, { mode: 0o700 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  ensureLockDirectory(path)
+  ensureLockDirectory(claimsPath)
+
+  const queuePath = join(path, 'queue')
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(queuePath, 'ax', 0o600)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
+  ensureRegularLockFile(queuePath)
+}
+
+/**
+ * Initialize the append-only queue layout. The short grace period avoids
+ * mistaking an older client between mkdir and owner.json for an abandoned
+ * directory. Legacy locks are only reclaimed when their recorded PID is gone.
+ */
+function prepareQueueLock(path: string): boolean {
+  let created = false
+  try {
+    mkdirSync(path, { mode: 0o700 })
+    created = true
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+
+  const stats = lstatSync(path)
+  if (!stats.isDirectory()) throw new ConfigError(`Config lock is not a directory: ${path}`)
+  if (created || existsSync(join(path, 'claims'))) {
+    initializeQueueLock(path)
+    return true
+  }
+
+  const legacyOwnerPath = join(path, 'owner.json')
+  if (existsSync(legacyOwnerPath)) {
+    let pid: number | undefined
+    try {
+      const owner = JSON.parse(readFileSync(legacyOwnerPath, 'utf8')) as { pid?: unknown }
+      if (Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0) pid = owner.pid as number
+    } catch {
+      // An invalid legacy owner cannot be reclaimed without risking a live
+      // old client; fail closed until the user removes it.
+    }
+    if (pid === undefined || !processIsGone(pid)) return false
+    rmSync(legacyOwnerPath, { force: true })
+    initializeQueueLock(path)
+    return true
+  }
+
+  // An older client can be descheduled after mkdir but before owner.json.
+  // Fail closed for the full stale interval rather than introducing a short
+  // window in which a live legacy creator could be bypassed.
+  if (Date.now() - stats.mtimeMs < LOCK_STALE_MS) return false
+  initializeQueueLock(path)
+  return true
+}
+
+function appendLockQueue(path: string, nonce: string): void {
+  const queuePath = join(path, 'queue')
+  let descriptor: number | undefined
+  try {
+    descriptor = openSync(queuePath, 'a', 0o600)
+    // A complete record is emitted by one small write on an O_APPEND fd.
+    // This gives contenders a single filesystem order; the `Q:` framing lets
+    // readers resynchronize after unrelated malformed or partial bytes.
+    const record = Buffer.from(`Q:${nonce}\n`, 'utf8')
+    const written = writeSync(descriptor, record, 0, record.length)
+    if (written !== record.length) throw new ConfigError('Unable to append complete lock record')
+    fsyncSync(descriptor)
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor)
+  }
+}
+
+function queuedLockNonces(path: string): string[] {
+  const raw = readFileSync(join(path, 'queue'), 'utf8')
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const match of raw.matchAll(LOCK_QUEUE_RECORD)) {
+    const nonce = match[1].toLowerCase()
+    if (!seen.has(nonce)) {
+      seen.add(nonce)
+      result.push(nonce)
+    }
+  }
+  return result
+}
+
+function claimIsActive(path: string, nonce: string): boolean {
+  const claimPath = join(path, 'claims', `${nonce}.json`)
+  let stats
+  try {
+    stats = lstatSync(claimPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  if (!stats.isFile()) {
+    throw new ConfigError(`Config lock claim must be a regular file: ${claimPath}`)
+  }
+
+  let pid: number | undefined
+  try {
+    const claim = JSON.parse(readFileSync(claimPath, 'utf8')) as {
+      nonce?: unknown
+      pid?: unknown
+    }
+    if (claim.nonce === nonce
+      && Number.isSafeInteger(claim.pid)
+      && (claim.pid as number) > 0) pid = claim.pid as number
+  } catch {
+    // A fresh partial claim may still be in the process of being published.
+  }
+
+  if (pid !== undefined) {
+    if (!processIsGone(pid)) return true
+  } else if (Date.now() - stats.mtimeMs <= LOCK_STALE_MS) {
+    return true
+  }
+
+  // Claim names contain an unguessable nonce and are never reused, so two
+  // reclaimers deleting this exact stale path cannot affect a newer owner.
+  rmSync(claimPath, { force: true })
+  return false
+}
+
+function firstActiveLockClaim(path: string): string | undefined {
+  const existingClaims = new Set(
+    readdirSync(join(path, 'claims'))
+      .map((name) => /^([0-9a-f-]{36})\.json$/i.exec(name)?.[1].toLowerCase())
+      .filter((nonce): nonce is string => nonce !== undefined),
+  )
+  for (const nonce of queuedLockNonces(path)) {
+    // The queue is intentionally append-only, but released claims are absent
+    // from this small directory snapshot. Avoid one lstat per historical
+    // queue entry as the CLI accumulates operations.
+    if (!existingClaims.has(nonce)) continue
+    if (claimIsActive(path, nonce)) return nonce
+  }
+  return undefined
 }
 
 function acquireConfigLock(): () => void {
@@ -268,51 +447,39 @@ function acquireConfigLock(): () => void {
   const path = lockPath()
   const startedAt = Date.now()
 
+  while (!prepareQueueLock(path)) {
+    if (Date.now() - startedAt >= LOCK_WAIT_MS) {
+      throw new ConfigError(`CONFIG_LOCK_TIMEOUT: waited 5 seconds for ${path}`)
+    }
+    sleepSync(25)
+  }
+
+  const nonce = randomUUID()
+  const claimPath = join(path, 'claims', `${nonce}.json`)
+  writeFileSync(
+    claimPath,
+    JSON.stringify({ pid: process.pid, nonce, createdAt: new Date().toISOString() }),
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' },
+  )
+  try {
+    appendLockQueue(path, nonce)
+  } catch (error) {
+    rmSync(claimPath, { force: true })
+    throw error
+  }
+
   while (true) {
     try {
-      mkdirSync(path, { mode: 0o700 })
-      const nonce = randomUUID()
-      try {
-        writeFileSync(
-          join(path, 'owner.json'),
-          JSON.stringify({ pid: process.pid, nonce, createdAt: new Date().toISOString() }),
-          { encoding: 'utf8', mode: 0o600, flag: 'wx' },
-        )
-      } catch (error) {
-        rmSync(path, { recursive: true, force: true })
-        throw error
-      }
-
+      if (firstActiveLockClaim(path) !== nonce) throw new Error('LOCK_BUSY')
       let released = false
       return () => {
         if (released) return
         released = true
-        try {
-          const owner = JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8')) as {
-            nonce?: unknown
-          }
-          // Never let a delayed release remove a lock acquired by a newer
-          // process after stale-lock recovery.
-          if (owner.nonce === nonce) rmSync(path, { recursive: true, force: true })
-        } catch {
-          // A missing/replaced owner file means this process no longer owns it.
-        }
+        rmSync(claimPath, { force: true })
       }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'EEXIST') throw error
-
-      try {
-        if (lockOwnerIsGone(path)
-          || Date.now() - statSync(path).mtimeMs > LOCK_STALE_MS) {
-          rmSync(path, { recursive: true, force: true })
-          continue
-        }
-      } catch {
-        continue
-      }
-
+    } catch {
       if (Date.now() - startedAt >= LOCK_WAIT_MS) {
+        rmSync(claimPath, { force: true })
         throw new ConfigError(`CONFIG_LOCK_TIMEOUT: waited 5 seconds for ${path}`)
       }
       sleepSync(25)
@@ -383,11 +550,11 @@ function parseJson(raw: string, source = CONFIG_FILE): unknown {
   }
 }
 
-function parsePersisted(value: unknown): PersistedConfig {
+function parsePersisted(value: unknown, source = CONFIG_FILE): PersistedConfig {
   const parsed = persistedConfigSchema.safeParse(value)
   if (!parsed.success) {
     throw new ConfigError(
-      `Invalid config schema in ${CONFIG_FILE}: ${describeValidationError(parsed.error)}`,
+      `Invalid config schema in ${source}: ${describeValidationError(parsed.error)}`,
     )
   }
   return parsed.data
@@ -441,6 +608,7 @@ function migrateLegacyConfigUnlocked(
       `Invalid legacy config schema in ${CONFIG_FILE}: ${describeValidationError(parsed.error)}`,
     )
   }
+  if (existsSync(lastGoodPath())) readLastGood()
 
   if (!legacyAlreadyBackedUp && existsSync(backupPath())) {
     throw new ConfigError(
@@ -507,6 +675,9 @@ function saveConfigUnlocked(
 ): void {
   ensureConfigDir()
   secureKnownConfigFiles()
+  // An existing recovery copy is part of the persisted state contract. Never
+  // silently replace a malformed copy, even when the primary is still valid.
+  if (existsSync(lastGoodPath())) readLastGood()
   const persisted = dehydrate(config)
   const serialized = `${JSON.stringify(persisted, null, 2)}\n`
 
@@ -519,27 +690,69 @@ function saveConfigUnlocked(
     return
   }
 
-  if (existsSync(CONFIG_FILE)) {
+  writeAtomic(CONFIG_FILE, serialized)
+  // Keep recovery current after the primary replacement is durable. A crash
+  // between these writes still leaves either the prior valid recovery copy or
+  // the new valid primary; credential removal/rotation uses the stricter
+  // synchronizeLastGood ordering above.
+  writeAtomic(lastGoodPath(), serialized)
+}
+
+function readLastGood(): { raw: string; config: PersistedConfig } {
+  const path = lastGoodPath()
+  const raw = readFileSync(path, 'utf8')
+  const value = parseJson(raw, path)
+  return { raw, config: parsePersisted(value, path) }
+}
+
+function recoveryWarning(primaryWasCorrupt: boolean): void {
+  const detail = primaryWasCorrupt
+    ? ' The invalid primary file was preserved for inspection.'
+    : ''
+  process.stderr.write(`Warning: recovered cli-mail configuration from its last-good backup.${detail}\n`)
+}
+
+function recoverFromLastGoodUnlocked(primaryWasCorrupt: boolean): AppConfig {
+  // Validate the recovery source before renaming or overwriting anything.
+  const recovery = readLastGood()
+
+  if (primaryWasCorrupt) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const corruptPath = `${CONFIG_FILE}.corrupt-${timestamp}-${randomUUID()}`
     try {
-      const currentRaw = readFileSync(CONFIG_FILE, 'utf8')
-      const currentValue = parseJson(currentRaw)
-      if (typeof currentValue === 'object' && currentValue !== null && 'version' in currentValue) {
-        parsePersisted(currentValue)
-        writeAtomic(lastGoodPath(), currentRaw)
-      }
+      chmodSync(CONFIG_FILE, 0o600)
     } catch {
-      // Never replace a known-good backup with malformed external content.
+      // See ensureConfigDir permission note.
     }
+    renameSync(CONFIG_FILE, corruptPath)
+    try {
+      chmodSync(corruptPath, 0o600)
+    } catch {
+      // See ensureConfigDir permission note.
+    }
+    fsyncDirectory()
   }
 
-  writeAtomic(CONFIG_FILE, serialized)
-  if (!existsSync(lastGoodPath())) writeAtomic(lastGoodPath(), serialized)
+  writeAtomic(CONFIG_FILE, recovery.raw)
+  recoveryWarning(primaryWasCorrupt)
+  return hydrate(recovery.config)
+}
+
+function validateLegacy(value: unknown): void {
+  const parsed = legacyConfigSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new ConfigError(
+      `Invalid legacy config schema in ${CONFIG_FILE}: ${describeValidationError(parsed.error)}`,
+    )
+  }
 }
 
 function loadConfigUnlocked(): AppConfig {
   ensureConfigDir()
   secureKnownConfigFiles()
   if (!existsSync(CONFIG_FILE)) {
+    if (existsSync(lastGoodPath())) return recoverFromLastGoodUnlocked(false)
+
     // Recover an interrupted v1 migration: the first durable step moves the
     // original aside, so it remains the source of truth until v2 is written.
     if (existsSync(backupPath())) {
@@ -551,10 +764,16 @@ function loadConfigUnlocked(): AppConfig {
     return config
   }
 
-  const raw = readFileSync(CONFIG_FILE, 'utf8')
-  const value = parseJson(raw)
-  if (typeof value === 'object' && value !== null && 'version' in value) {
-    return hydrate(parsePersisted(value))
+  let value: unknown
+  try {
+    value = parseJson(readFileSync(CONFIG_FILE, 'utf8'))
+    if (typeof value === 'object' && value !== null && 'version' in value) {
+      return hydrate(parsePersisted(value))
+    }
+    validateLegacy(value)
+  } catch (error) {
+    if (!(error instanceof ConfigError) || !existsSync(lastGoodPath())) throw error
+    return recoverFromLastGoodUnlocked(true)
   }
 
   return migrateLegacyConfigUnlocked(value)
@@ -565,9 +784,14 @@ export function loadConfig(): AppConfig {
   ensureConfigDir()
   secureKnownConfigFiles()
   if (existsSync(CONFIG_FILE)) {
-    const value = parseJson(readFileSync(CONFIG_FILE, 'utf8'))
-    if (typeof value === 'object' && value !== null && 'version' in value) {
-      return hydrate(parsePersisted(value))
+    try {
+      const value = parseJson(readFileSync(CONFIG_FILE, 'utf8'))
+      if (typeof value === 'object' && value !== null && 'version' in value) {
+        return hydrate(parsePersisted(value))
+      }
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error
+      // Recovery and its warning are serialized under the config lock.
     }
   }
   return withConfigLock(loadConfigUnlocked)
@@ -727,11 +951,36 @@ export function renameAccount(oldAlias: string, newAlias: string): void {
   })
 }
 
-/** Atomically merges a token refresh into the latest config revision. */
-export function updateAccountTokens(alias: string, tokens: OAuthTokens): void {
+/**
+ * Atomically merge a token refresh into the latest config revision.  A
+ * refresh is bound to the stable account and OAuth client that initiated it,
+ * so deleting an account, reusing its alias, or reauthorizing it while a
+ * refresh is in flight can never overwrite the replacement credentials.
+ */
+export function updateAccountTokens(
+  identity: AccountTokenIdentity,
+  tokens: OAuthTokens,
+  expectedRefreshTokenBinding: string,
+): void {
   mutateConfig((config) => {
-    const account = config.accounts.find((candidate) => candidate.alias === alias)
-    if (!account) throw new ConfigError(`Account not found: ${alias}`)
+    const account = config.accounts.find((candidate) => candidate.id === identity.id)
+    if (!account) {
+      throw new ConfigError(`Account no longer exists: ${identity.alias}`)
+    }
+    if (account.provider !== identity.provider || account.client_id !== identity.clientId) {
+      throw new ConfigError(
+        `Account authorization changed while refreshing tokens: ${account.alias}`,
+      )
+    }
+    const currentRefreshTokenBinding = createHash('sha256')
+      .update('cli-mail-refresh-token\0')
+      .update(account.tokens.refresh_token)
+      .digest('hex')
+    if (currentRefreshTokenBinding !== expectedRefreshTokenBinding) {
+      throw new ConfigError(
+        `Account credentials changed while refreshing tokens: ${account.alias}`,
+      )
+    }
     account.tokens = { ...tokens }
     if (tokens.scope) account.scopes = tokens.scope.split(/\s+/).filter(Boolean)
     account.status = 'active'
