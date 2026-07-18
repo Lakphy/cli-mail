@@ -56,11 +56,11 @@ Register a Microsoft Entra desktop/mobile application, configure it as a **publi
 cli-mail account add outlook --client-id <application-client-id> --alias work
 ```
 
-See Microsoft's [desktop app configuration](https://learn.microsoft.com/entra/identity-platform/scenario-desktop-app-configuration).
+See Microsoft's [desktop app quickstart](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-desktop-app-sign-in).
 
-### Config migration from 0.1
+### Legacy configuration migration
 
-The first 0.2 read migrates v1 config to v2, writes a `0600` `.v1.bak`, preserves aliases/tags/stable metadata, discards old tokens, and marks accounts `needs_reauth`.
+When a v1 configuration is detected, cli-mail migrates it to v2 and writes a `0600` `.v1.bak`. Aliases, tags, and stable account metadata are preserved; old tokens are discarded and the migrated accounts are marked `needs_reauth`.
 
 ```bash
 cli-mail account migration status
@@ -81,8 +81,8 @@ cli-mail message list --top 20
 cli-mail message get <message-id>
 cli-mail message search --query 'from:boss@example.com'
 cli-mail message raw <message-id>
-cli-mail message recent --since 2026-01-01T00:00:00Z
-cli-mail inbox --since 2026-01-01T00:00:00Z
+cli-mail message recent --hours 24
+cli-mail inbox --hours 24
 
 # Sending is irreversible and requires confirmation
 cli-mail message send \
@@ -99,16 +99,9 @@ cli-mail message delete <message-id> --permanent --yes
 cli-mail message batch-delete --ids <id-1> <id-2> --permanent --yes
 ```
 
-All irreversible deletes, sends, and config-backup removal require `--yes`. Attachment downloads refuse to overwrite by default; use `--force` only when replacement is intended.
+All irreversible deletes, sends, and config-backup removal require `--yes`. Attachment downloads refuse to overwrite by default; use `--force` only when replacement is intended. Changing a draft's `--body-type` also requires a replacement `--body`.
 
-### 0.2.1 behavior changes
-
-- `account validate [alias]` now performs an online identity check against the Gmail profile endpoint or Outlook `/me` (up to four accounts concurrently). It exits `0` when every selected account succeeds or when no accounts exist, `2` when only some accounts succeed, and `1` when a selected account or every account fails.
-- `cli-mail inbox` reads only the provider's Inbox. `cli-mail message recent` still searches the whole mailbox.
-- Gmail does not support `message list --skip`; the command now fails explicitly. For every provider, `--skip` and `--page-token` are mutually exclusive.
-- `draft update --body-type` requires `--body`, preventing an existing body from being relabelled without replacement content.
-- Outlook vacation settings accept `--external-audience none|contactsOnly|all`. Omitting it preserves the current value, and `settings vacation get` reports `externalAudience`. Gmail rejects this Outlook-only option.
-- If an Outlook send fails after the `/send` request begins and delivery cannot be determined, the CLI returns `SEND_OUTCOME_UNKNOWN` with `details.draftId`. Do not immediately resend; use that ID and check Sent Items first.
+`account validate [alias]` performs an online identity check against the Gmail profile endpoint or Outlook `/me`, with up to four checks in parallel. It exits `0` when all selected accounts succeed or no accounts exist, `2` on partial success, and `1` when the selected account or every account fails.
 
 ### JSON contract
 
@@ -158,7 +151,7 @@ cli-mail --format json message list --top 20
 cli-mail --format json message list --top 20 --page-token '<data-from-meta.nextToken>'
 ```
 
-Pagination tokens use the v2 format. Tokens created by cli-mail 0.2.0 are intentionally invalid; rerun the first page to obtain a new token. A v2 token carries the complete request context (`folder`, `query`, `parent`, `label`, history `types`, `startHistoryId`, `since`, and `top` when applicable), so those options may be omitted on later pages. If supplied again, they must match the token. Markdown output also prints `nextToken` when another page is available.
+Pagination tokens use the v2 format and carry the complete request context (`folder`, `query`, `parent`, `label`, history `types`, `startHistoryId`, `since`, and `top` when applicable). Continuation options may be omitted because the token restores them; if supplied again, they must match. Tokens cannot be reused across accounts, providers, or operations. Markdown output also prints `nextToken` when another page is available.
 
 Raw MIME is emitted as exact bytes in the default mode. JSON mode returns `{content, encoding:"base64", mediaType, byteLength}`.
 
@@ -173,9 +166,13 @@ cli-mail --format json message list | jq -r '.data[].id'
 
 - Gmail search accepts Gmail search syntax.
 - Outlook message search uses Graph `$search`/KQL. It is separate from OData filters.
+- `cli-mail inbox` reads only each provider's Inbox; `message recent` searches the whole mailbox.
+- Gmail rejects `message list --skip`; every provider rejects combining `--skip` with `--page-token`.
 - Outlook IDs use `Prefer: IdType="ImmutableId"`, so moves keep stable IDs.
+- Outlook vacation settings accept `--external-audience none|contactsOnly|all`; omission preserves the current value. Gmail rejects this Outlook-only option.
+- If Outlook returns `SEND_OUTCOME_UNKNOWN`, use `details.draftId` to check Sent Items before retrying; an immediate retry can send a duplicate.
 - Gmail send-as and forwarding-address list/get remain read-only.
-- Delegate operations, send-as create/delete, forwarding-address add/remove, and forwarding writes are unsupported by the user OAuth model. Hidden 0.2 migration stubs explain the replacement; they will be removed in 0.3.
+- Delegate operations, send-as create/delete, forwarding-address add/remove, and forwarding writes are unsupported by the user OAuth model. Do not rely on the hidden compatibility commands for these operations.
 
 ### Local security
 
@@ -228,9 +225,9 @@ cli-mail account add outlook --client-id <application-client-id>
 
 两家授权流程都会使用系统浏览器、随机 loopback 端口、`state` 和 S256 PKCE。
 
-### 从 0.1 迁移
+### 旧配置迁移
 
-0.2 会自动把 v1 配置迁移为 v2，备份为权限 `0600` 的 `.v1.bak`。旧 token 不会复制；账号会进入 `needs_reauth`，必须重新绑定：
+检测到 v1 配置时，cli-mail 会迁移为 v2，并生成权限为 `0600` 的 `.v1.bak`。别名、标签和稳定账号元数据会保留；旧 token 不会复制，账号会进入 `needs_reauth`，必须重新授权：
 
 ```bash
 cli-mail account migration status
@@ -245,8 +242,8 @@ cli-mail account migration finalize --yes
 cli-mail message list --top 20
 cli-mail message get <message-id>
 cli-mail message search --query 'from:boss@example.com'
-cli-mail message recent --since 2026-01-01T00:00:00Z
-cli-mail inbox --since 2026-01-01T00:00:00Z
+cli-mail message recent --hours 24
+cli-mail inbox --hours 24
 cli-mail account validate [alias]
 
 # 发送、回复、转发必须明确确认
@@ -261,16 +258,9 @@ cli-mail message batch-delete --ids <id-1> <id-2>
 cli-mail message delete <message-id> --permanent --yes
 ```
 
-其他不可逆删除同样需要 `--yes`。附件下载默认禁止覆盖已有文件，需要覆盖时显式传 `--force`。
+其他不可逆删除同样需要 `--yes`。附件下载默认禁止覆盖已有文件，需要覆盖时显式传 `--force`。使用 `draft update --body-type` 时必须同时提供新的 `--body`。
 
-### 0.2.1 行为变更
-
-- `account validate [alias]` 现在会在线请求 Gmail profile 或 Outlook `/me` 校验身份，最多并发校验 4 个账号。所选账号全部成功或没有账号时退出码为 `0`，部分成功为 `2`，所选单账号失败或全部失败为 `1`。
-- `cli-mail inbox` 只读取各服务商的收件箱；`cli-mail message recent` 仍会查询整个邮箱。
-- Gmail 不支持 `message list --skip`，现在会明确报错；所有服务商都禁止同时使用 `--skip` 与 `--page-token`。
-- `draft update --body-type` 必须同时提供 `--body`，避免只改变类型却错误解释已有正文。
-- Outlook 假期回复支持 `--external-audience none|contactsOnly|all`；省略时保留现有配置，`settings vacation get` 会返回 `externalAudience`。Gmail 会拒绝这个 Outlook 专用选项。
-- Outlook 在发出 `/send` 请求后若无法判断投递结果，会返回 `SEND_OUTCOME_UNKNOWN` 和 `details.draftId`。不要立即重发，应先用该 ID 检查 Sent Items（已发送邮件）。
+`account validate [alias]` 会在线请求 Gmail profile 或 Outlook `/me` 校验身份，最多并发检查 4 个账号。全部成功或没有账号时退出码为 `0`，部分成功为 `2`，所选单账号失败或全部失败为 `1`。
 
 ### JSON 输出
 
@@ -283,14 +273,18 @@ cli-mail --format json message list
 - 失败：`{ok:false,error:{code,message,...}}`，退出码 `1`
 - JSON 模式 stdout 始终只有一个 JSON 文档
 - 下一页使用 `meta.nextToken`，并原样传给同一账号、同一命令的 `--page-token`
-- 分页 token 仅支持 v2；cli-mail 0.2.0 生成的 token 已失效，需要从首页重新执行
-- v2 token 会携带完整查询上下文：`folder`、`query`、`parent`、`label`、history `types`、`startHistoryId`、`since` 与适用时的 `top`；续页可以省略这些参数，若再次传入则必须与 token 一致
+- 分页 token 使用 v2 格式，并携带完整查询上下文：`folder`、`query`、`parent`、`label`、history `types`、`startHistoryId`、`since` 与适用时的 `top`
+- 续页可以省略 token 已保存的参数；若再次传入则必须一致，且 token 不能跨账号、服务商或操作复用
 - Markdown 输出在还有下一页时也会显示 `nextToken`
 - raw MIME 在 JSON 中以 base64 和字节数返回；默认模式输出原始字节
 
-### 权限边界
+### 服务商差异与权限边界
 
-Gmail 普通用户 OAuth 只保留 send-as 查询、forwarding-address 列表和 forwarding 查询等只读能力。delegate、send-as 创建/删除、forwarding-address 添加/移除、forwarding 写入均不在 0.2 的支持范围内；隐藏迁移命令会给出替代操作说明，并将在 0.3 删除。
+- `cli-mail inbox` 只读取各服务商的收件箱；`message recent` 查询整个邮箱。
+- Gmail 不支持 `message list --skip`；所有服务商都禁止同时使用 `--skip` 与 `--page-token`。
+- Outlook 假期回复支持 `--external-audience none|contactsOnly|all`，省略时保留现有配置；Gmail 拒绝该选项。
+- Outlook 返回 `SEND_OUTCOME_UNKNOWN` 时，应使用 `details.draftId` 检查“已发送邮件”后再决定是否重试，避免重复发送。
+- Gmail 普通用户 OAuth 只保留 send-as 查询、forwarding-address 列表和 forwarding 查询等只读能力。delegate、send-as 创建/删除、forwarding-address 添加/移除、forwarding 写入均不受支持，不应依赖隐藏兼容命令执行这些操作。
 
 ### 本地安全
 

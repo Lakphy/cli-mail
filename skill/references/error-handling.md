@@ -30,7 +30,7 @@ Failure example:
 - Inspect the selected account with `cli-mail account info <alias>`.
 - Correct invalid JSON, tags, page tokens, or missing confirmation flags.
 
-### `ACCOUNT_REAUTH_REQUIRED` in a config message or `AUTH_ERROR`
+### `ACCOUNT_REAUTH_REQUIRED` / `AUTH_ERROR`
 
 Do not remove migrated account metadata. Reauthorize the existing alias:
 
@@ -64,6 +64,10 @@ Use `statusCode`, `details`, and `suggestion`. Safe GETs already receive bounded
 ### `REQUEST_TIMEOUT`
 
 Check connectivity and provider status, then retry a read. Ask before retrying an irreversible action.
+
+### `SEND_OUTCOME_UNKNOWN`
+
+An Outlook send request started, but delivery could not be confirmed. Do not resend immediately. Read `details.draftId`, check Sent Items, and ask the user before any retry.
 
 ## Partial errors
 

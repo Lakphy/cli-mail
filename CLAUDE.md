@@ -1,8 +1,8 @@
-# CLAUDE.md
+# Project guidance
 
 ## Project
 
-`@lakphy/cli-mail` 0.2.1 is a Node.js 22.12+ CLI for Gmail and Outlook. It uses direct REST calls, no provider SDKs, and exposes Markdown plus a stable JSON envelope.
+`@lakphy/cli-mail` is a Node.js 22.12+ CLI for Gmail and Outlook. It uses direct REST calls, no provider SDKs, and exposes Markdown plus a stable JSON envelope. Read the current package version from `package.json`; do not duplicate it in long-lived documentation.
 
 ## Commands
 
@@ -63,4 +63,10 @@ Command flow: Commander validates input â†’ command resolves an active account â
 
 ## Testing
 
-Tests mirror `src/` under `tests/`. Provider tests must not call real APIs. Cover REST paths/query/header behavior, raw responses, pagination, partial failure, output/exit contracts, and security boundaries. Update tests when changing a public 0.2 contract; do not preserve obsolete 0.1 JSON shapes.
+Tests mirror `src/` under `tests/`. Provider tests must not call real APIs. Cover REST paths/query/header behavior, raw responses, pagination, partial failure, output/exit contracts, and security boundaries. Update tests deliberately when changing the public CLI contract; retain legacy behavior only where the current migration path requires it.
+
+## Documentation
+
+- Keep `README.md` focused on current installation, behavior, and operational guidance; release history belongs in Git history or release notes.
+- Keep `skill/` aligned with the current command tree, output envelopes, safety gates, and provider capability boundaries.
+- Delete one-off plans and completed audit instructions instead of letting stale file paths or line numbers become project guidance.

@@ -35,7 +35,7 @@ cli-mail message search \
 |---|---|
 | Sender | `from:sender@example.com` |
 | Subject | `subject:invoice` |
-| Attachment | `hasAttachment:true` |
+| Attachment | `hasAttachments:true` |
 | Exact phrase | `"quarterly report"` |
 | Combine criteria | `from:sender@example.com subject:invoice` |
 
@@ -48,6 +48,8 @@ cli-mail message search \
 ```
 
 Do not pass expressions such as `isRead eq false` or `contains(subject, ...)` to `message search`; those are OData filter expressions and are not this command's contract. If the requested Outlook property is not supported by KQL, explain the limitation and narrow the result with a supported query rather than inventing syntax.
+
+Provider references: [Gmail search and filtering](https://developers.google.com/workspace/gmail/api/guides/filtering) and [Microsoft Graph `$search` for messages](https://learn.microsoft.com/en-us/graph/search-query-parameter#use-search-on-message-collections).
 
 ## Query failure workflow
 

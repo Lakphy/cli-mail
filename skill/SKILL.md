@@ -1,6 +1,6 @@
 ---
 name: cli-mail-assistant
-description: Operate local Gmail and Outlook accounts with cli-mail 0.2. Use for reading, searching, sending, replying, forwarding, deleting, organizing, or downloading email; managing cli-mail accounts and OAuth migration; interpreting its Markdown/JSON output; or when users mention Gmail, Outlook, 邮件, 邮箱, 发邮件, 查邮件, 邮件附件, or cli-mail errors.
+description: Operate local Gmail and Outlook accounts with cli-mail. Use for reading, searching, sending, replying, forwarding, deleting, organizing, or downloading email; managing cli-mail accounts and OAuth migration; interpreting its Markdown/JSON output; or when users mention Gmail, Outlook, 邮件, 邮箱, 发邮件, 查邮件, 邮件附件, or cli-mail errors.
 ---
 
 # cli-mail assistant
@@ -23,10 +23,10 @@ Use `cli-mail` as a local REST client for Gmail and Outlook. Treat account crede
 cli-mail --version
 ```
 
-Require version 0.2.x and Node.js 22.12+. Install with:
+Require Node.js 22.12+ and install the current cli-mail release with:
 
 ```bash
-npm install -g '@lakphy/cli-mail@^0.2.0'
+npm install -g @lakphy/cli-mail
 ```
 
 ## Bind accounts
@@ -70,13 +70,13 @@ Use Markdown when presenting results directly. Use JSON for selection, counting,
 cli-mail --format json message list --account <alias>
 ```
 
-Parse the 0.2 envelope:
+Parse the current JSON envelope:
 
 - Exit 0: read `data`, `meta`, and `warnings` from `{ok:true,...}`.
 - Exit 2: use successful `data` and report item-level `errors` from `{ok:false,partial:true,...}`.
 - Exit 1: inspect `error.code`, `error.message`, and optional `error.suggestion`.
 - Read the next cursor from `meta.nextToken`; never extract or modify its contents.
-- Pass a token only to the same account and operation that returned it.
+- Pass a token only to the same account, provider, and operation that returned it. Omitted continuation options are restored from the token; repeated options must match its saved context.
 
 ```bash
 cli-mail --format json message list | jq '.data | length'
@@ -116,6 +116,8 @@ cli-mail message reply <message-id> --body 'Reply' [--reply-all] --yes
 cli-mail message forward <message-id> --to recipient@example.com --yes
 cli-mail draft send <draft-id> --yes
 ```
+
+If Outlook returns `SEND_OUTCOME_UNKNOWN`, do not retry immediately. Use `details.draftId` to check Sent Items first so the user does not send a duplicate.
 
 ### Delete after choosing recoverable or permanent behavior
 
@@ -158,7 +160,7 @@ Use these Gmail settings operations only for reads:
 - `forwarding-address list`
 - `settings forwarding get`
 
-Do not recommend delegate commands, send-as create/delete, forwarding-address add/remove, or forwarding writes. They are hidden migration stubs in 0.2 and will be removed in 0.3. Direct users to Gmail or Google Workspace administration instead.
+Do not recommend delegate commands, send-as create/delete, forwarding-address add/remove, or forwarding writes. The current user OAuth model does not support them. Direct users to Gmail or Google Workspace administration instead.
 
 ## References
 

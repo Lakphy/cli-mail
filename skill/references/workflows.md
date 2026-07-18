@@ -25,7 +25,7 @@ Read `.meta.nextToken`. If present, pass it unchanged to the same command and ac
 cli-mail --format json message list --account <alias> --page-token '<token>'
 ```
 
-Do not reuse tokens across accounts, providers, commands, folders, or searches.
+Do not reuse tokens across accounts, providers, commands, folders, or searches. The token restores omitted continuation options; if an option is repeated, it must match the context saved in the token.
 
 ## Partial success
 
@@ -56,6 +56,8 @@ cli-mail message send \
 ```
 
 Never infer approval from the original request when required details changed during preparation.
+
+If Outlook reports `SEND_OUTCOME_UNKNOWN`, read `details.draftId` and check Sent Items before retrying. An immediate retry can create a duplicate message.
 
 ## Delete
 
@@ -89,3 +91,7 @@ cli-mail attachment download <message-id> <attachment-id> \
 ## Account migration
 
 Run `account migration status`. Reauthorize every pending alias using a new Desktop/public client. Finalize only when `canFinalize` is true and the user approves deleting the v1 backup.
+
+## Validate accounts
+
+Use `cli-mail account validate [alias]` for an online identity check. Exit `0` means all selected accounts succeeded (or none exist), exit `2` means partial success, and exit `1` means the selected account or every account failed. Preserve successful results when handling exit `2`.
